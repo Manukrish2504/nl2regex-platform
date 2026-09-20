@@ -12,7 +12,16 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useConnection } from '@/features/connection/api'
 import { ApiError } from '@/lib/api'
 import { fileName, resolveColumns } from '@/lib/utils'
-import { cancelJob, isActive, useJob, useJobRows, type Job } from './api'
+import {
+  cancelJob,
+  isActive,
+  KIND_LABELS,
+  useJob,
+  useJobRows,
+  type Job,
+  type PiiReport,
+  type StandardiseReport,
+} from './api'
 import { StatusBadge } from './status'
 
 const PAGE_SIZES = [25, 50, 100]
@@ -79,12 +88,20 @@ function JobView({ job }: { job: Job }) {
           </Button>
         </div>
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+          {job.kind !== 'replace' && (
+            <>
+              <dt className="text-muted-foreground">Transformation</dt>
+              <dd>{KIND_LABELS[job.kind]}</dd>
+            </>
+          )}
           {job.prompt && (
             <>
-              <dt className="text-muted-foreground">Asked</dt>
+              <dt className="text-muted-foreground">{job.kind === 'replace' ? 'Asked' : 'Instruction'}</dt>
               <dd className="min-w-0 break-words">“{job.prompt}”</dd>
             </>
           )}
+          {job.kind === 'replace' && (
+          <>
           <dt className="text-muted-foreground">Find</dt>
           <dd className="flex min-w-0 flex-col gap-1">
             {job.pattern ? (
@@ -120,6 +137,8 @@ function JobView({ job }: { job: Job }) {
               </span>
             )}
           </dd>
+          </>
+          )}
           <dt className="text-muted-foreground">In</dt>
           <dd className="flex flex-wrap gap-1.5">
             {job.columns.length ? (
@@ -175,6 +194,8 @@ function JobView({ job }: { job: Job }) {
         </Alert>
       )}
 
+      {job.report && <Report job={job} />}
+
       {job.status === 'SUCCESS' && <Results job={job} />}
     </div>
   )
@@ -205,7 +226,7 @@ function Results({ job }: { job: Job }) {
         <DataTable
           columns={rows.data.columns}
           rows={rows.data.rows}
-          highlighted={job.columns.length ? resolveColumns(job.columns, rows.data.columns) : rows.data.columns}
+          highlighted={resolveColumns(touchedColumns(job) ?? rows.data.columns, rows.data.columns)}
           firstRowNumber={(rows.data.page - 1) * rows.data.page_size + 1}
           className={rows.isPlaceholderData ? 'opacity-60 transition-opacity' : undefined}
         />
@@ -249,6 +270,103 @@ function Results({ job }: { job: Job }) {
           </div>
         </nav>
       )}
+    </section>
+  )
+}
+
+/** The columns a job changed, or null for "every column". */
+function touchedColumns(job: Job): string[] | null {
+  if (job.kind === 'redact_pii' && job.report) {
+    return (job.report as PiiReport).operations.flatMap((operation) => operation.columns)
+  }
+  return job.columns.length ? job.columns : null
+}
+
+/** What Claude decided, and what that changed. Shown as soon as it is decided, while Spark works. */
+function Report({ job }: { job: Job }) {
+  const count = (rows?: number) => (rows === undefined ? '…' : rows.toLocaleString())
+  const cached = job.report!.from_cache && (
+    <Badge variant="outline" title="The same question was answered before, so Claude was not called this time.">
+      from cache
+    </Badge>
+  )
+
+  if (job.kind === 'standardise') {
+    const report = job.report as StandardiseReport
+    return (
+      <section className="flex flex-col gap-2" aria-label="What was standardised">
+        <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+          <span>
+            <span className="font-medium text-foreground">{report.distinct_before}</span> different values in{' '}
+            <span className="font-medium text-foreground">{report.column}</span> became{' '}
+            <span className="font-medium text-foreground">{report.distinct_after}</span>.
+          </span>
+          {cached}
+        </p>
+        <div className="overflow-hidden rounded-xl border border-border bg-card/60">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/40 text-left text-muted-foreground">
+              <tr>
+                <th className="px-3 py-2 font-medium">Was</th>
+                <th className="px-3 py-2 font-medium">Became</th>
+                <th className="px-3 py-2 text-right font-medium">Rows</th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.mapping.map((entry) => (
+                <tr key={entry.from} className="border-t border-border">
+                  <td className="px-3 py-1.5 font-mono text-[0.8rem]">{entry.from}</td>
+                  <td className="px-3 py-1.5 font-medium">{entry.to}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">
+                    {entry.rows.toLocaleString()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    )
+  }
+
+  const report = job.report as PiiReport
+  const placeholder = (kind: string) => report.operations.find((operation) => operation.kind === kind)?.placeholder
+  return (
+    <section className="flex flex-col gap-2" aria-label="What was found">
+      <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+        <span>Claude saw column names and the shapes of values, never a value, and found:</span>
+        {cached}
+      </p>
+      <div className="overflow-hidden rounded-xl border border-border bg-card/60">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/40 text-left text-muted-foreground">
+            <tr>
+              <th className="px-3 py-2 font-medium">Column</th>
+              <th className="px-3 py-2 font-medium">Holds</th>
+              <th className="px-3 py-2 font-medium">Because</th>
+              <th className="px-3 py-2 font-medium">Masked as</th>
+            </tr>
+          </thead>
+          <tbody>
+            {report.findings.map((finding) => (
+              <tr key={`${finding.column}:${finding.kind}`} className="border-t border-border">
+                <td className="px-3 py-1.5 font-medium">{finding.column}</td>
+                <td className="px-3 py-1.5">{finding.kind.replace('_', ' ')}</td>
+                <td className="px-3 py-1.5 text-muted-foreground">{finding.reason}</td>
+                <td className="px-3 py-1.5 font-mono text-[0.8rem]">{placeholder(finding.kind)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        {report.operations.map((operation) => (
+          <span key={operation.kind}>
+            <span className="font-mono text-foreground">{operation.placeholder}</span> in{' '}
+            {count(operation.rows_changed)} rows
+          </span>
+        ))}
+      </p>
     </section>
   )
 }

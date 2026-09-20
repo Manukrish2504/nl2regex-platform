@@ -373,10 +373,19 @@ src/lib/             the fetch wrapper (typed ApiError) and small helpers
   and says under the box that only the sentence is sent, never the data. Regex mode takes a
   typed pattern. Each mode keeps its own text, because a sentence is not a regex. On a server
   without an API key, Describe is disabled and says why.
+- **Three transformations, one composer.** *Find and replace* (Describe or Regex), *Redact
+  personal data* and *Standardise a column*. Each says what will be sent to Claude before
+  anything is: for redaction, with a real value from the preview and the shape that goes in its
+  place ("+1 (632) 132-1488" goes as "+9 (999) 999-9999"); for standardising, by naming the one
+  column whose values are sent. Standardising takes exactly one column, so its picker is
+  single-select and the send button waits for it.
 - **The job page shows its work:** what was asked, the pattern Claude wrote with a *written by
   Claude* or *from cache* badge, and a one-line explanation of what it matches. While the pattern
   is being written that row is a skeleton, and the replacement and columns read "being read from
-  your sentence", since the sentence may state them.
+  your sentence", since the sentence may state them. For the other two transformations it shows
+  a report as soon as Claude has answered, while Spark is still working: what was found, why,
+  and how it was masked, or the mapping with the rows each spelling had. The rows each operation
+  changed are filled in when the job ends, and only the columns it touched are tinted.
 - **A job page per job**, at `/jobs/:id`, so a refresh keeps your place and the sidebar's items are
   real links. It polls every second while the job is queued or running and stops when it ends.
   Routing is the browser's History API; two routes do not need a library.
@@ -393,6 +402,12 @@ src/lib/             the fetch wrapper (typed ApiError) and small helpers
 | ![The job page while the pattern is written: the sentence, a skeleton, and a cancel button](assets/screenshots/job-writing.png) | ![The sentence, the pattern with its source and explanation, and the paginated result with the target column tinted](assets/screenshots/job-results.png) |
 
 ![Live progress on a larger file, with a cancel button](assets/screenshots/job-running.png)
+
+| Redacting personal data | Standardising a column |
+|---|---|
+| ![What Claude found from shapes alone, how it was masked, and the masked rows](assets/screenshots/redact-results.png) | ![Thirteen spellings of five countries, the mapping with row counts, and the cleaned column](assets/screenshots/standardise-results.png) |
+
+![Redaction in the composer: nothing to type, and an example of what is sent in place of a value](assets/screenshots/redact-composer.png)
 
 ![Browsing a bucket; files the app cannot process are shown but disabled](assets/screenshots/file-browser.png)
 

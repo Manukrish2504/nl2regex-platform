@@ -2,7 +2,7 @@ import { useConnection } from '@/features/connection/api'
 import { Link } from '@/components/link'
 import { matchJobPath, usePath } from '@/lib/router'
 import { cn, fileName } from '@/lib/utils'
-import { useJobs } from './api'
+import { KIND_LABELS, useJobs } from './api'
 import { StatusDot } from './status'
 
 /** The sidebar's list of this connection's jobs. */
@@ -34,8 +34,8 @@ export function RecentJobs() {
             <StatusDot status={job.status} />
             <span className="min-w-0 flex-1">
               <span className="block truncate">{fileName(job.file_key)}</span>
-              <span className={cn('block truncate text-xs text-muted-foreground', !job.prompt && 'font-mono')}>
-                {job.prompt ?? job.pattern}
+              <span className={cn('block truncate text-xs text-muted-foreground', job.kind === 'replace' && !job.prompt && 'font-mono')}>
+                {job.kind === 'replace' ? (job.prompt ?? job.pattern) : KIND_LABELS[job.kind]}
               </span>
             </span>
             {job.status === 'RUNNING' && (
