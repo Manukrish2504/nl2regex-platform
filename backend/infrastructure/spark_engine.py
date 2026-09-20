@@ -402,8 +402,7 @@ def _rewritten(
                 # A broadcast join: the mapping is tiny, so every executor gets a copy and the
                 # file's rows are never shuffled to meet it. A hash lookup per row, where a
                 # literal map expression would scan its keys.
-                pairs = list(operation.mapping.items()) or [("", "")]
-                lookup = spark.createDataFrame(pairs, [f"from{number}", f"to{number}"])
+                lookup = _local_table(spark, operation.mapping, f"from{number}", f"to{number}")
                 frame = frame.join(F.broadcast(lookup), before == F.col(f"from{number}"), "left")
                 after = F.coalesce(F.col(f"to{number}"), before)
             changed = changed | ~after.eqNullSafe(before)
@@ -433,6 +432,21 @@ def _rewritten(
     )
     named = observed.select(*[F.col(f"c{index}").alias(name) for index, name in enumerate(header)])
     return named, observation
+
+
+def _local_table(spark: SparkSession, mapping: dict[str, str], key: str, value: str) -> DataFrame:
+    """The mapping as a table that lives in the query plan. createDataFrame would make it an RDD,
+    and broadcasting that runs a small job of its own before the real one.
+
+    The values travel as parameters, never as SQL text, and the parameters are NAMED: PySpark
+    4.1 bound positional "?" markers in reverse here, which turned {"AUS": "Australia"} into
+    "us" -> "AUS" without any error. The engines' differential test is what caught it.
+    """
+    pairs = list(mapping.items()) or [("", "")]
+    rows = ", ".join(f"(:k{n}, :v{n})" for n in range(len(pairs)))
+    args = {f"k{n}": before for n, (before, _) in enumerate(pairs)}
+    args |= {f"v{n}": after for n, (_, after) in enumerate(pairs)}
+    return spark.sql(f"SELECT * FROM VALUES {rows} AS lookup({key}, {value})", args=args)
 
 
 def _columns(operation: Operation) -> list[str]:
