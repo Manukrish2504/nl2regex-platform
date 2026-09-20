@@ -11,6 +11,7 @@ from domain.connections import FileFormat
 from domain.errors import (
     ConnectionNotFound,
     DomainError,
+    EngineUnavailable,
     InvalidPattern,
     JobNotFinished,
     JobNotFound,
@@ -26,8 +27,8 @@ from services.connections import ConnectionService
 
 logger = logging.getLogger(__name__)
 
-# A failure worth trying again. Everything else (bad credentials, a missing column) fails at once.
-TRANSIENT_ERRORS = (StorageUnreachable,)
+# Failures worth trying again. Everything else (bad credentials, a missing column) fails at once.
+TRANSIENT_ERRORS = (StorageUnreachable, EngineUnavailable)
 
 
 def utc_now() -> datetime:
