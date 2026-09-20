@@ -16,6 +16,8 @@ interface PromptInputProps {
   /** Controls on the left of the action bar. */
   actions?: ReactNode
   className?: string
+  /** Extra classes for the text itself, such as a monospace font for code. */
+  inputClassName?: string
 }
 
 /**
@@ -31,6 +33,7 @@ function PromptInput({
   attachments,
   actions,
   className,
+  inputClassName,
 }: PromptInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -73,12 +76,15 @@ function PromptInput({
           placeholder={placeholder}
           aria-label={placeholder}
           rows={1}
-          className="min-h-12 resize-none overflow-hidden rounded-none border-0 bg-transparent px-2 py-1.5 text-base focus-visible:ring-0 md:text-base dark:bg-transparent"
+          className={cn(
+            "min-h-12 resize-none overflow-hidden rounded-none border-0 bg-transparent px-2 py-1.5 text-base focus-visible:ring-0 md:text-base dark:bg-transparent",
+            inputClassName
+          )}
         />
       </div>
 
-      <div className="flex items-center justify-between gap-2 pt-2">
-        <div className="flex min-w-0 items-center gap-1">{actions}</div>
+      <div className="flex items-end justify-between gap-2 pt-2">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">{actions}</div>
         <Button
           type="button"
           size="icon"

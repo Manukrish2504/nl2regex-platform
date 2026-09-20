@@ -8,10 +8,10 @@ asynchronously via Celery.
 
 ![The composer with a file chosen from S3](assets/screenshots/composer.png)
 
-> Work in progress. So far: the one-command stack, connecting to your S3 bucket, browsing its files,
-> and the asynchronous job pipeline (API and workers) with progress, cancellation, retries and
-> paginated results. The job UI, Spark engine, LLM integration, deployment URL and demo video land
-> here as the build progresses.
+> Work in progress. So far, end to end: connect your S3 bucket, choose a file, preview it, give a
+> regex and a replacement, pick the columns, and an asynchronous job rewrites the file with live
+> progress, cancellation, retries and paginated results. The Spark engine, natural-language patterns
+> (LLM), deployment URL and demo video land here as the build progresses.
 
 ## Run
 
@@ -110,12 +110,23 @@ src/lib/             the fetch wrapper (typed ApiError) and small helpers
 ```
 
 - **One screen, one flow.** The composer's action button walks through the steps: *Connect S3
-  bucket*, then *Choose file*, then the chosen file sits in the composer as a chip.
+  bucket*, then *Choose file*, then the chosen file sits in the composer as a chip and a worker
+  reads its first rows. The preview's column headers are the column picker: click to target a
+  column, or leave them all unselected to apply the pattern everywhere.
+- **A job page per job**, at `/jobs/:id`, so a refresh keeps your place and the sidebar's items are
+  real links. It polls every second while the job is queued or running and stops when it ends.
+  Routing is the browser's History API; two routes do not need a library.
+- **Results never arrive all at once.** The table asks for one page, keeps showing it while the next
+  loads, and offers 25, 50 or 100 rows per page.
 - **Server state lives in TanStack Query.** A 401 from any request flips the app back to "not
   connected", so an expired connection is handled in one place.
 - **The secret key never enters React state.** The connect form is an uncontrolled native form,
   read once with `FormData` on submit and then reset. The submit is a plain async function rather
   than a TanStack mutation, because mutations keep their variables in a cache for minutes.
+
+| A job running | Its results |
+|---|---|
+| ![Live progress with a cancel button](assets/screenshots/job-running.png) | ![Paginated results with the target columns tinted](assets/screenshots/job-results.png) |
 
 ![Browsing a bucket; files the app cannot process are shown but disabled](assets/screenshots/file-browser.png)
 

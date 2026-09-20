@@ -6,3 +6,6 @@ export function formatFileSize(bytes: number): string {
   const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
   return `${parseFloat((bytes / 1024 ** index).toFixed(1))} ${units[index]}`
 }
+
+/** "samples/archive/old.csv" -> "old.csv" */
+export const fileName = (key: string) => key.split("/").pop() ?? key

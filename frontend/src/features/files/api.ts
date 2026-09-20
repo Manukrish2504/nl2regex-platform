@@ -1,4 +1,4 @@
-import { useInfiniteQuery } from '@tanstack/react-query'
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 
 import { api } from '@/lib/api'
 
@@ -28,5 +28,21 @@ export function useFiles(prefix: string) {
     },
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => lastPage.next_token,
+  })
+}
+
+export type FilePreview =
+  | { status: 'pending' }
+  | { status: 'done'; columns: string[]; rows: (string | null)[][] }
+  | { status: 'failed'; error: { code: string; message: string } }
+
+/** Column names and first rows. A worker reads the file, so this polls until it has. */
+export function usePreview(fileKey: string | null) {
+  return useQuery({
+    queryKey: ['preview', fileKey],
+    queryFn: () => api<FilePreview>(`/connection/files/preview/?${new URLSearchParams({ key: fileKey! })}`),
+    enabled: fileKey !== null,
+    refetchInterval: (query) => (query.state.data?.status === 'pending' ? 800 : false),
+    staleTime: Infinity,
   })
 }
