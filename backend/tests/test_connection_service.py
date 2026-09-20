@@ -1,37 +1,11 @@
 import pytest
+from fakes import FakeStorage, FakeVault
 
-from domain.connections import FileListing, S3Credentials
+from domain.connections import S3Credentials
 from domain.errors import ConnectionNotFound, InvalidCredentials
 from services.connections import ConnectionService, connection_id_for
 
 CREDENTIALS = S3Credentials("AKIAEXAMPLEEXAMPLE00", "not-a-real-secret-key")
-
-
-class FakeStorage:
-    def __init__(self, error=None):
-        self.error = error
-
-    def resolve_bucket(self, credentials, bucket):
-        if self.error:
-            raise self.error
-        return "eu-north-1"
-
-    def list_files(self, connection, prefix, page_token):
-        return FileListing([f"{connection.bucket}/{prefix}"], [], None)
-
-
-class FakeVault:
-    def __init__(self):
-        self.entries = {}
-
-    def store(self, connection):
-        self.entries[connection.id] = connection
-
-    def load(self, connection_id):
-        return self.entries.get(connection_id)
-
-    def delete(self, connection_id):
-        self.entries.pop(connection_id, None)
 
 
 def test_connect_stores_the_connection_under_a_digest_of_the_token():

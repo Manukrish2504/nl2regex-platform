@@ -39,6 +39,13 @@ class ConnectionService:
             raise ConnectionNotFound()
         return connection
 
+    def get_by_id(self, connection_id: str) -> Connection:
+        """For background workers, which hold a connection ID but never the browser's token."""
+        connection = self._vault.load(connection_id)
+        if connection is None:
+            raise ConnectionNotFound()
+        return connection
+
     def list_files(self, token: str | None, prefix: str, page_token: str | None) -> FileListing:
         return self._storage.list_files(self.get(token), prefix, page_token)
 
