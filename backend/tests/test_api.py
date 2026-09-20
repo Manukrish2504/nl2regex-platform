@@ -7,6 +7,7 @@ from api.views import CONNECTION_COOKIE
 from domain import errors
 from infrastructure.s3_storage import S3Storage
 
+pytestmark = pytest.mark.django_db  # disconnecting also forgets the connection's jobs
 SECRET = "wJalrXUtnFEMI-not-a-real-secret-EXAMPLEKEY"
 
 

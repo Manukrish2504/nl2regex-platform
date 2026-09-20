@@ -22,3 +22,26 @@ class FileListQuerySerializer(serializers.Serializer):
         required=False, allow_blank=True, default="", max_length=1024, trim_whitespace=False
     )
     page_token = serializers.CharField(required=False, default=None, max_length=2048)
+
+
+class JobSubmitSerializer(serializers.Serializer):
+    file_key = serializers.CharField(max_length=1024, trim_whitespace=False)
+    # Whitespace matters in a pattern and in a replacement, so neither is trimmed.
+    pattern = serializers.CharField(max_length=1000, trim_whitespace=False)
+    replacement = serializers.CharField(
+        max_length=1000, allow_blank=True, trim_whitespace=False, default=""
+    )
+    columns = serializers.ListField(
+        child=serializers.CharField(max_length=300, trim_whitespace=False),
+        max_length=500,
+        default=list,
+    )
+
+
+class PageQuerySerializer(serializers.Serializer):
+    page = serializers.IntegerField(min_value=1, default=1)
+    page_size = serializers.IntegerField(min_value=1, max_value=200, default=50)
+
+
+class PreviewQuerySerializer(serializers.Serializer):
+    key = serializers.CharField(max_length=1024, trim_whitespace=False)

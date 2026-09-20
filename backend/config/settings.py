@@ -14,6 +14,7 @@ ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost").split(",")
 INSTALLED_APPS = [
     "rest_framework",
     "api",
+    "infrastructure",  # only so Django manages its tables; see infrastructure/models.py
 ]
 
 MIDDLEWARE = [
@@ -39,6 +40,32 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 CELERY_BROKER_URL = f"{REDIS_URL}/0"
 CELERY_RESULT_BACKEND = f"{REDIS_URL}/1"
+CELERY_IMPORTS = ("tasks.jobs", "tasks.files")
+
+# Jobs are long, so a worker must not reserve more messages than it is running.
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+# Acknowledge a message only after its task ends. If the worker process dies first, the broker
+# hands the message out again, and the job is taken over instead of being lost.
+CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+# The soft limit raises inside the task, which then fails its job cleanly. The hard limit kills
+# the process for code that cannot be interrupted, such as a runaway regex match.
+CELERY_TASK_SOFT_TIME_LIMIT = 15 * 60
+CELERY_TASK_TIME_LIMIT = 16 * 60
+# Redis hands out again any message left unacknowledged for this long. It must exceed the hard
+# limit, or a long job would be started twice. It is also how long a job waits to be taken over
+# when a whole worker dies (one dead process is noticed at once), so it stays close to the limit
+# instead of at Redis's 1-hour default.
+CELERY_BROKER_TRANSPORT_OPTIONS = {"visibility_timeout": CELERY_TASK_TIME_LIMIT + 4 * 60}
+
+JOB_MAX_ACTIVE_PER_CONNECTION = 3
+JOB_MAX_ATTEMPTS = 3
+# A job still RUNNING after this long has no worker left: the hard limit killed it, and that
+# message was acknowledged, so nothing will redeliver it. This must exceed the visibility timeout,
+# or it would fail a job that is about to be taken over.
+JOB_STALE_AFTER = CELERY_BROKER_TRANSPORT_OPTIONS["visibility_timeout"] + 2 * 60
+# Job output (Parquet). Web and workers must see the same folder: a shared volume in compose.
+RESULTS_DIR = Path(os.environ.get("RESULTS_DIR", BASE_DIR / ".results"))
 
 
 def _redis_cache(database: int) -> dict:
@@ -66,7 +93,7 @@ REST_FRAMEWORK = {
     # may set a SameSite=Strict cookie, which would let another site connect a visitor to the
     # attacker's bucket. A form post now gets a 415.
     "DEFAULT_PARSER_CLASSES": ["rest_framework.parsers.JSONParser"],
-    "DEFAULT_THROTTLE_RATES": {"connect": "10/min"},
+    "DEFAULT_THROTTLE_RATES": {"connect": "10/min", "jobs": "30/min"},
     # Throttles identify clients by IP. Behind the reverse proxy that is the last
     # X-Forwarded-For entry, which the proxy sets and a client cannot forge.
     "NUM_PROXIES": 1,

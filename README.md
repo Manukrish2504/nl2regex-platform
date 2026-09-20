@@ -8,9 +8,10 @@ asynchronously via Celery.
 
 ![The composer with a file chosen from S3](assets/screenshots/composer.png)
 
-> Work in progress. So far: the one-command stack, connecting to your S3 bucket (API, encrypted
-> credential vault and UI), and browsing its files. The job pipeline, Spark engine, LLM integration,
-> deployment URL and demo video land here as the build progresses.
+> Work in progress. So far: the one-command stack, connecting to your S3 bucket, browsing its files,
+> and the asynchronous job pipeline (API and workers) with progress, cancellation, retries and
+> paginated results. The job UI, Spark engine, LLM integration, deployment URL and demo video land
+> here as the build progresses.
 
 ## Run
 
@@ -32,17 +33,19 @@ The backend is four layers. Dependencies only point inward, and
 [a test](backend/tests/test_architecture.py) fails the build if an import breaks that rule.
 
 ```
-presentation     api/             DRF views, serializers, error mapping. No logic.
-                  │               (Celery tasks join this layer in the job pipeline.)
+presentation     api/  tasks/     DRF views and Celery tasks. Both only translate and delegate.
+                  │
 service          services/        Use-cases. Standard library and domain imports only.
                   │
 domain           domain/          Entities, errors, and ports (interfaces). Standard library only.
                   ▲
-infrastructure   infrastructure/  boto3 S3 adapter, encrypted credential vault, cache serializer.
+infrastructure   infrastructure/  S3 adapter, credential vault, job repository (Django ORM),
+                                  Celery queue, transform engine, Parquet result store.
 ```
 
 - **The domain defines what it needs** as `typing.Protocol` ports (`ObjectStorage`,
-  `CredentialVault`). Infrastructure implements them, so boto3, Redis and Django never leak into
+  `CredentialVault`, `JobRepository`, `TaskQueue`, `TransformEngine`, `ResultStore`).
+  Infrastructure implements them, so boto3, Redis and Django never leak into
   the business rules, and the service layer is tested with small in-memory fakes.
 - **`config/container.py` is the composition root.** It is the one place that wires real adapters
   into services. Views, and later Celery tasks, ask it for a service and never import
@@ -50,6 +53,49 @@ infrastructure   infrastructure/  boto3 S3 adapter, encrypted credential vault, 
 - **Errors are domain objects.** Each has a stable `code` and a message that is safe to show.
   One handler maps them to HTTP statuses, so every API failure has the same shape:
   `{"error": {"code": "...", "message": "..."}}`.
+
+### Jobs: the asynchronous pipeline
+
+`POST /api/jobs/` validates the request, saves a `QUEUED` job and returns `202` with its ID in a few
+milliseconds. A Celery worker does the work and the browser polls.
+
+| Endpoint | Behaviour |
+|---|---|
+| `POST /api/jobs/` | Body `{file_key, pattern, replacement, columns}`. `202` with the job. Rate limited. |
+| `GET /api/jobs/` · `GET /api/jobs/{id}/` | This connection's jobs: status, progress, stage, error, row counts. |
+| `POST /api/jobs/{id}/cancel/` | A queued job is cancelled at once. A running one stops at its next batch. |
+| `GET /api/jobs/{id}/rows/?page=&page_size=` | One page of the result. `409` until the job succeeds. |
+| `GET /api/connection/files/preview/?key=` | Column names and first rows, read by a worker. Poll until `done`. |
+
+- **The state machine lives on the `Job` entity** (`QUEUED`, `RUNNING`, `SUCCESS`, `FAILED`,
+  `CANCELLED`), and every status change is persisted as a compare-and-set:
+  `UPDATE ... WHERE id = ? AND status = ? AND attempts = ?`. Two workers, or a cancel racing a
+  finish, cannot both win, and no locks are needed.
+- **A job belongs to the connection that created it.** Another browser gets a 404, and
+  disconnecting cancels that connection's jobs and deletes their output.
+- **Workers receive IDs only.** Task arguments are visible in Flower and in the event stream, so
+  credentials never travel that way. A worker looks them up in the vault by connection ID.
+- **Results are Parquet**, written in row groups of 10,000 rows. A page read finds its row group
+  from the file footers and reads only that group, so page latency does not grow with the result
+  (measured: 11 ms for a page in the middle of 400,000 rows).
+- **Every cell is text, and the replacement is literal.** A cleaning tool must not alter cells it
+  was not asked to touch, so `00123` never becomes `123`, and `$1` in a replacement is just `$1`.
+
+**How failures are handled** (behaviour checked against Celery's source and on the running stack):
+
+| Failure | What happens |
+|---|---|
+| S3 is unreachable | The job returns to `QUEUED` and Celery retries it with exponential backoff, three attempts at most. |
+| Bad credentials, a missing column, an unreadable file | The job fails at once with a message the user can act on. No retry. |
+| A worker process dies mid-job (`kill -9`, out of memory) | Late acknowledgement makes the broker redeliver the message. The redelivered task takes the job over as a new attempt and starts from a clean output folder. |
+| A job kills its worker every time | An attempt cap of three stops the loop. |
+| The soft time limit | The task fails its job cleanly with `timed_out`. |
+| The hard time limit (code that cannot be interrupted) | Celery kills the process and acknowledges the message, so nothing redelivers it. A job still `RUNNING` past the visibility timeout is marked failed the next time it is read. |
+| The same message reaches two workers | The compare-and-set lets one start. The other sees no row change and stops. |
+
+The transform engine in this phase streams the file through one process. It sits behind the
+`TransformEngine` port, which the PySpark engine implements next; this one then stays in the test
+suite as the reference the Spark engine's output is compared against.
 
 ### Frontend
 
@@ -111,12 +157,13 @@ The bucket can be in any region. The app discovers the region when you connect.
 
 ```sh
 cd backend
-uv run pytest        # needs no Docker, database or AWS account
+uv run pytest        # needs no Docker, database server or AWS account
 uv run ruff check .
 ```
 
-Tests use in-memory caches and a fake S3 ([moto](https://github.com/getmoto/moto)), and the same
-commands run in CI on every pull request.
+Tests use in-memory caches, SQLite and a fake S3 ([moto](https://github.com/getmoto/moto)), and the
+same commands run in CI on every pull request. The task layer is tested by running the real Celery
+tasks against the real engine, repository and result store.
 
 `scripts/make_sample_data.py` generates a deterministic, deliberately messy customer dataset (CSV or
 Excel, any row count) for demos and benchmarks.
