@@ -6,6 +6,7 @@ from typing import Protocol
 
 from domain.connections import Connection, FileFormat, FileListing, S3Credentials
 from domain.jobs import Job, JobStatus, TransformResult
+from domain.patterns import PatternSuggestion, Rejection
 from domain.tables import FilePreview, Row
 
 
@@ -113,3 +114,28 @@ class PreviewStore(Protocol):
         ...
 
     def put(self, connection_id: str, file_key: str, entry: dict) -> None: ...
+
+
+class PatternWriter(Protocol):
+    """A language model that writes a regex from a request. It sees the request and nothing else:
+    no column names, no rows. The user's data never leaves for a third party."""
+
+    is_configured: bool  # False when there is no API key: requests must then be refused up front
+
+    def write(self, request: str, rejected: Rejection | None = None) -> PatternSuggestion:
+        """Raises PatternNotUnderstood if the request does not describe something to find."""
+        ...
+
+
+class PatternCache(Protocol):
+    """So that an identical request is not sent to the language model twice."""
+
+    def get(self, request: str) -> PatternSuggestion | None: ...
+
+    def put(self, request: str, suggestion: PatternSuggestion) -> None: ...
+
+
+class PatternProbe(Protocol):
+    def check(self, pattern: str) -> None:
+        """Raises UnsafePattern if the pattern could take exponentially long on some input."""
+        ...

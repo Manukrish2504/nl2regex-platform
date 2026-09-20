@@ -91,6 +91,52 @@ class InvalidPattern(DomainError):
         super().__init__(f"That is not a valid regular expression: {reason}.")
 
 
+class UnsafePattern(DomainError):
+    """The pattern compiles, but could take exponentially long on some input."""
+
+    code = "unsafe_pattern"
+
+    def __init__(self, reason: str):
+        super().__init__(f"That pattern is not safe to run on a large file: {reason}.")
+
+
+class PatternNotUnderstood(DomainError):
+    code = "pattern_not_understood"
+
+    def __init__(self, reason: str):
+        super().__init__(
+            f"That could not be turned into a pattern: {reason} "
+            "Describe what to find, or switch to Regex mode and write the pattern yourself."
+        )
+
+
+class PatternNotVerified(DomainError):
+    code = "pattern_not_verified"
+
+    def __init__(self, reason: str):
+        super().__init__(
+            f"No pattern written for that request passed its checks. The last problem: {reason} "
+            "Try describing it differently, or switch to Regex mode."
+        )
+
+
+class LLMNotConfigured(DomainError):
+    code = "llm_not_configured"
+    message = "Describing a pattern in plain English is not set up on this server. Use Regex mode."
+
+
+class LLMUnavailable(DomainError):
+    code = "llm_unavailable"
+    message = "The language model could not be reached. Try again in a moment."
+
+
+class LLMRejectedRequest(DomainError):
+    """The provider refused the call itself (a bad key, no credit). For the operator to fix."""
+
+    code = "llm_rejected_request"
+    message = "The language model refused the request. The server's API key needs attention."
+
+
 class TooManyActiveJobs(DomainError):
     code = "too_many_active_jobs"
     message = "You already have several jobs in progress. Wait for one to finish, or cancel one."
