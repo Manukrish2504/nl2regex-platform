@@ -11,6 +11,9 @@ x-backend: &backend
     DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-only-insecure-key}
     DJANGO_DEBUG: ${DJANGO_DEBUG:-1}
     DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,web}
+    # Dev-only default. Web and worker must share it; production must supply its own
+    # (generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())").
+    CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-uAWLf857qzm9wBcJZE6-m0rANNqQGYVj-x9t2Ow3kvw=}
     POSTGRES_HOST: postgres
     POSTGRES_DB: nl2regex
     POSTGRES_USER: nl2regex
