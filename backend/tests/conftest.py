@@ -15,6 +15,16 @@ def _empty_caches():
         caches[alias].clear()
 
 
+@pytest.fixture(autouse=True)
+def _isolated_services(settings, tmp_path):
+    """Each test gets its own results folder and freshly wired services."""
+    from config import container
+
+    settings.RESULTS_DIR = tmp_path / "results"
+    for factory in (container.connection_service, container.job_service, container.preview_service):
+        factory.cache_clear()
+
+
 @pytest.fixture
 def s3_bucket():
     """A fake S3 (moto) holding a small bucket. Yields the bucket name."""
@@ -35,3 +45,27 @@ def s3_bucket():
         ):
             client.put_object(Bucket=BUCKET, Key=key, Body=b"" if key.endswith("/") else b"data")
         yield BUCKET
+
+
+@pytest.fixture
+def put_object(s3_bucket):
+    """Upload a file into the fake bucket: put_object("data/x.csv", b"id,name\\n1,A\\n")."""
+    client = boto3.client(
+        "s3", region_name=REGION, aws_access_key_id="testing", aws_secret_access_key="testing"
+    )
+
+    def put(key: str, body: bytes) -> str:
+        client.put_object(Bucket=BUCKET, Key=key, Body=body)
+        return key
+
+    return put
+
+
+@pytest.fixture
+def connection(s3_bucket):
+    """A domain Connection pointing at the fake bucket."""
+    from domain.connections import Connection, S3Credentials
+
+    return Connection(
+        "a" * 64, BUCKET, REGION, S3Credentials("AKIAEXAMPLEEXAMPLE00", "not-a-secret")
+    )

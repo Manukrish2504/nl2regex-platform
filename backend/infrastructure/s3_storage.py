@@ -10,8 +10,10 @@ from domain.errors import (
     BucketAccessDenied,
     BucketNotFound,
     DomainError,
+    FileUnreadable,
     InvalidCredentials,
     InvalidPageToken,
+    ObjectNotFound,
     StorageError,
     StorageUnreachable,
 )
@@ -43,6 +45,7 @@ _ERRORS_BY_AWS_CODE: dict[str, type[DomainError]] = {
     "AllAccessDisabled": BucketAccessDenied,
     "403": BucketAccessDenied,
     "InvalidArgument": InvalidPageToken,  # a continuation token S3 does not recognise
+    "NoSuchKey": ObjectNotFound,
 }
 
 
@@ -50,6 +53,8 @@ def translate(error: Exception) -> DomainError:
     """Map any botocore failure to a domain error. Unknown failures keep their AWS code."""
     if isinstance(error, boto_errors.ClientError):
         aws_code = error.response.get("Error", {}).get("Code", "Unknown")
+        if aws_code == "InvalidRange":  # a ranged read of a zero-byte object
+            return FileUnreadable("The file is empty.")
         domain_error = _ERRORS_BY_AWS_CODE.get(aws_code)
         return domain_error() if domain_error else StorageError(aws_code)
     if isinstance(error, (boto_errors.ConnectionError, boto_errors.HTTPClientError)):
@@ -59,8 +64,8 @@ def translate(error: Exception) -> DomainError:
 
 class S3Storage:
     def resolve_bucket(self, credentials: S3Credentials, bucket: str) -> str:
-        client = _client(credentials, _DISCOVERY_REGION)
-        with _translated_errors(bucket):
+        client = client_for(credentials, _DISCOVERY_REGION)
+        with translated_errors(bucket):
             # A GET first: its error body names the exact problem (bad key, bad signature, no such
             # bucket, no permission). A HEAD can only say 403 or 404.
             client.list_objects_v2(Bucket=bucket, MaxKeys=1)
@@ -76,7 +81,7 @@ class S3Storage:
         self, connection: Connection, prefix: str, page_token: str | None
     ) -> FileListing:
         # ponytail: a new client per request. Cache one per connection if listing latency matters.
-        client = _client(connection.credentials, connection.region)
+        client = client_for(connection.credentials, connection.region)
         params = {
             "Bucket": connection.bucket,
             "Prefix": prefix,
@@ -85,7 +90,7 @@ class S3Storage:
         }
         if page_token:
             params["ContinuationToken"] = page_token
-        with _translated_errors(connection.bucket):
+        with translated_errors(connection.bucket):
             page = client.list_objects_v2(**params)
 
         files = [
@@ -97,7 +102,7 @@ class S3Storage:
         return FileListing(folders, files, page.get("NextContinuationToken"))
 
 
-def _client(credentials: S3Credentials, region: str):
+def client_for(credentials: S3Credentials, region: str):
     return boto3.client(
         "s3",
         region_name=region,
@@ -108,7 +113,12 @@ def _client(credentials: S3Credentials, region: str):
 
 
 @contextmanager
-def _translated_errors(bucket: str):
+def translated_errors(bucket: str):
+    """Turn any botocore failure inside the block into a domain error, logging it once.
+
+    Reading a response body can fail long after the request succeeded, so stream consumers wrap
+    their whole read loop in this, not just the call that opened the object.
+    """
     try:
         yield
     except (boto_errors.ClientError, boto_errors.BotoCoreError) as error:
@@ -127,3 +137,17 @@ def _log_failure(error: Exception, bucket: str) -> None:
         )
     else:
         logger.warning("S3 unreachable: error=%s bucket=%s", type(error).__name__, bucket)
+
+
+def open_object(connection: Connection, key: str, first_bytes: int | None = None):
+    """Open an object for streaming: (body, total_size). `first_bytes` reads only a prefix."""
+    client = client_for(connection.credentials, connection.region)
+    params = {"Bucket": connection.bucket, "Key": key}
+    if first_bytes:
+        params["Range"] = f"bytes=0-{first_bytes - 1}"
+    with translated_errors(connection.bucket):
+        response = client.get_object(**params)
+    # For a ranged read, ContentRange ("bytes 0-99/1234") carries the object's full size.
+    content_range = response.get("ContentRange")
+    size = int(content_range.rsplit("/", 1)[1]) if content_range else response["ContentLength"]
+    return response["Body"], size
