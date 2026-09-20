@@ -13,7 +13,8 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      # setup-uv publishes full version tags only; there is no moving "v10" tag.
+      - uses: astral-sh/setup-uv@v10.1.0
       - run: uv sync --frozen
       - run: uv run ruff check .
       - run: uv run ruff format --check .

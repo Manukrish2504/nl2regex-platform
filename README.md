@@ -6,9 +6,11 @@ asynchronously via Celery.
 
 **Stack:** Django + DRF · React (Vite, TypeScript) · Celery · Redis · PySpark · Postgres
 
-> Work in progress. So far: the one-command stack, and the S3 connection API with its credential
-> vault. The UI, job pipeline, Spark engine, LLM integration, deployment URL and demo video land here
-> as the build progresses.
+![The composer with a file chosen from S3](assets/screenshots/composer.png)
+
+> Work in progress. So far: the one-command stack, connecting to your S3 bucket (API, encrypted
+> credential vault and UI), and browsing its files. The job pipeline, Spark engine, LLM integration,
+> deployment URL and demo video land here as the build progresses.
 
 ## Run
 
@@ -48,6 +50,28 @@ infrastructure   infrastructure/  boto3 S3 adapter, encrypted credential vault, 
 - **Errors are domain objects.** Each has a stable `code` and a message that is safe to show.
   One handler maps them to HTTP statuses, so every API failure has the same shape:
   `{"error": {"code": "...", "message": "..."}}`.
+
+### Frontend
+
+React 19 with TypeScript, Tailwind CSS 4 and [shadcn/ui](https://ui.shadcn.com) components, in a
+dark theme driven by one set of CSS variables in `src/index.css`.
+
+```
+src/components/ui/   shadcn primitives, plus prompt-input.tsx (the composer)
+src/components/      the app shell
+src/features/        connection/, files/ and composer/: each owns its API calls and screens
+src/lib/             the fetch wrapper (typed ApiError) and small helpers
+```
+
+- **One screen, one flow.** The composer's action button walks through the steps: *Connect S3
+  bucket*, then *Choose file*, then the chosen file sits in the composer as a chip.
+- **Server state lives in TanStack Query.** A 401 from any request flips the app back to "not
+  connected", so an expired connection is handled in one place.
+- **The secret key never enters React state.** The connect form is an uncontrolled native form,
+  read once with `FormData` on submit and then reset. The submit is a plain async function rather
+  than a TanStack mutation, because mutations keep their variables in a cache for minutes.
+
+![Browsing a bucket; files the app cannot process are shown but disabled](assets/screenshots/file-browser.png)
 
 ## How your AWS credentials are handled
 
