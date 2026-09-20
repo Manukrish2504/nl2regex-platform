@@ -1,4 +1,3 @@
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
 
 interface DataTableProps {
@@ -13,7 +12,7 @@ interface DataTableProps {
   className?: string
 }
 
-/** A read-only grid of text cells, used for the file preview and for a job's results. */
+/** A read-only grid of text cells: the file preview, and a page of a job's result. */
 export function DataTable({
   columns,
   rows,
@@ -23,23 +22,36 @@ export function DataTable({
   className,
 }: DataTableProps) {
   return (
-    <div className={cn('overflow-hidden rounded-xl border border-border bg-card/60', className)}>
-      <Table>
-        <TableHeader className="bg-muted/40">
-          <TableRow className="hover:bg-transparent">
-            <TableHead className="w-0 text-right text-xs text-muted-foreground">#</TableHead>
+    <div
+      className={cn(
+        'overflow-x-auto rounded-[12px] bg-[#0a0f0e] inset-ring inset-ring-[#151d1b]',
+        className,
+      )}
+    >
+      <table className="w-full border-collapse text-[12.5px]">
+        <thead>
+          <tr className="border-b border-rule">
+            <th className="w-0 px-3 py-2 text-right font-mono text-[10px] font-normal text-dim">
+              #
+            </th>
             {columns.map((column) => {
               const active = highlighted.includes(column)
               return (
-                <TableHead key={column} className={cn('whitespace-nowrap', active && 'text-primary')}>
+                <th
+                  key={column}
+                  className={cn(
+                    'px-3 py-2 text-left text-[12px] font-medium whitespace-nowrap',
+                    active ? 'text-primary' : 'text-[#98a5a1]',
+                  )}
+                >
                   {onToggleColumn ? (
                     <button
                       type="button"
                       aria-pressed={active}
                       onClick={() => onToggleColumn(column)}
                       className={cn(
-                        '-mx-1.5 rounded-md px-1.5 py-0.5 font-medium transition-colors hover:bg-muted',
-                        active && 'bg-primary/15 hover:bg-primary/25',
+                        '-mx-1.5 rounded-md px-1.5 py-0.5 transition-colors',
+                        active ? 'tint' : 'hover:bg-[#141b19]',
                       )}
                     >
                       {column}
@@ -47,36 +59,33 @@ export function DataTable({
                   ) : (
                     column
                   )}
-                </TableHead>
+                </th>
               )
             })}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
+          </tr>
+        </thead>
+        <tbody>
           {rows.map((row, rowIndex) => (
-            <TableRow key={rowIndex}>
-              <TableCell className="text-right text-xs text-muted-foreground tabular-nums">
+            <tr key={rowIndex} className="border-b border-rule/50 last:border-0">
+              <td className="px-3 py-1.5 text-right font-mono text-[10px] text-dim tabular-nums">
                 {(firstRowNumber + rowIndex).toLocaleString()}
-              </TableCell>
+              </td>
               {row.map((cell, cellIndex) => (
-                <TableCell
+                <td
                   key={cellIndex}
-                  title={cell ?? undefined}
                   className={cn(
-                    'max-w-72 truncate',
-                    highlighted.includes(columns[cellIndex]) && 'bg-primary/5',
+                    'max-w-[22rem] truncate px-3 py-1.5',
+                    highlighted.includes(columns[cellIndex]) ? 'text-[#e8efec]' : 'text-[#98a5a1]',
                   )}
+                  title={cell ?? undefined}
                 >
-                  {cell ?? <span className="text-muted-foreground/50">empty</span>}
-                </TableCell>
+                  {cell ?? <span className="text-[#4d5956] italic">empty</span>}
+                </td>
               ))}
-            </TableRow>
+            </tr>
           ))}
-        </TableBody>
-      </Table>
-      {rows.length === 0 && (
-        <p className="px-4 py-8 text-center text-sm text-muted-foreground">No rows.</p>
-      )}
+        </tbody>
+      </table>
     </div>
   )
 }

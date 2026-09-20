@@ -1,9 +1,14 @@
 # Development stack: `docker compose up --build` brings everything up.
+#
+# One port is published, and everything is reached through it, as it is in production:
 #   UI             http://localhost:5173
-#   API            http://localhost:8000/api/health/
-#   Flower         http://localhost:5555   Celery workers, queues and tasks
-#   Spark cluster  http://localhost:8080   the master: its workers and applications
-#   Spark job      http://localhost:4040   stages and tasks, only while a job is running
+#   API            http://localhost:5173/api/health/
+#   Flower         http://localhost:5173/flower/   Celery workers, queues and tasks
+#   Spark cluster  http://localhost:5173/spark/    the master: its workers and applications
+#   Spark job      http://localhost:5173/spark-job/  stages and tasks, while a job runs
+#
+# Postgres, Redis, the Spark master's RPC port and the API itself are on the compose
+# network only. Nothing but the web server is reachable from the host or the network.
 
 x-backend: &backend
   # Every backend service builds the same Dockerfile, so the layers (about 2 GB with Spark, Java
@@ -67,8 +72,6 @@ services:
   web:
     <<: *backend
     command: sh -c "python manage.py migrate --noinput && python manage.py runserver 0.0.0.0:8000"
-    ports:
-      - "8000:8000"
 
   # Light work: file previews. Kept apart from jobs so a preview never waits behind one.
   worker:
@@ -88,8 +91,6 @@ services:
     # A JVM outlives the process that started it by a moment, so it is orphaned when it exits.
     # An init process adopts and reaps it; with Celery as PID 1 every job would leave a zombie.
     init: true
-    ports:
-      - "4040:4040"
     depends_on:
       postgres:
         condition: service_healthy
@@ -104,8 +105,6 @@ services:
     build: ./backend
     command: spark-class org.apache.spark.deploy.master.Master --host spark-master
     init: true
-    ports:
-      - "8080:8080"
 
   # Scale out with `docker compose up -d --scale spark-worker=4`.
   spark-worker:
@@ -125,9 +124,9 @@ services:
 
   flower:
     <<: *backend
-    command: celery -A config flower --port=5555
-    ports:
-      - "5555:5555"
+    # url_prefix makes every link Flower generates start with /flower, so it works behind
+    # the one published port.
+    command: celery -A config flower --port=5555 --url_prefix=flower
 
   frontend:
     image: node:22-alpine

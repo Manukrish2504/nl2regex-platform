@@ -1,61 +1,215 @@
-import type { ReactNode } from 'react'
-import { Plus, Regex } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
+import { ChevronDown, Menu, Plug, Plus, Search, Unplug, X } from 'lucide-react'
 
+import { Diamond } from '@/components/diamond'
 import { Button } from '@/components/ui/button'
-import { ConnectionPanel } from '@/features/connection/connection-panel'
-import { ConnectionPill } from '@/features/connection/connection-pill'
+import { useConfig } from '@/features/config/api'
+import { useConnection, useDisconnect } from '@/features/connection/api'
 import { RecentJobs } from '@/features/jobs/recent-jobs'
+import { cn } from '@/lib/utils'
 
 interface AppShellProps {
+  title: ReactNode
   onNewTransformation: () => void
+  onConnect: () => void
+  /** The results panel, docked to the right of the conversation. */
+  panel?: ReactNode
   children: ReactNode
 }
 
-export function AppShell({ onNewTransformation, children }: AppShellProps) {
+/**
+ * The desktop-client frame: one window on a near-black page, a sidebar, a title bar, and the
+ * work in the middle. On a narrow screen the frame drops away and the sidebar hides, so the
+ * same components serve a phone.
+ */
+export function AppShell({ title, onNewTransformation, onConnect, panel, children }: AppShellProps) {
+  // On a phone the sidebar is a drawer over the work, as in a chat app. On a desktop it is
+  // always there, and this state is never used.
+  const [drawerOpen, setDrawerOpen] = useState(false)
+
   return (
-    <div className="relative flex min-h-svh">
-      <div aria-hidden className="glow pointer-events-none fixed inset-0" />
+    <div className="relative flex min-h-svh items-start justify-center bg-background p-0 lg:items-center lg:p-7">
+      <div
+        aria-hidden
+        className="glow pointer-events-none absolute top-[-18%] left-1/2 hidden h-[520px] w-[900px] -translate-x-1/2 rounded-[50%] lg:block"
+      />
 
-      {/* Wide screens get the sidebar. Narrow ones get a one-line header instead. */}
-      <aside className="sticky top-0 z-10 hidden h-svh w-64 shrink-0 flex-col gap-4 border-r border-sidebar-border bg-sidebar/70 p-3 backdrop-blur-md md:flex">
-        <Brand className="px-2 pt-1" />
+      <div className="relative flex h-svh w-full flex-col overflow-hidden bg-surface lg:h-[min(868px,calc(100svh-56px))] lg:min-h-[560px] lg:max-w-[1380px] lg:flex-row lg:rounded-[14px] lg:shadow-[0_0_0_1px_var(--surface-edge),0_40px_90px_-20px_rgba(0,0,0,0.9)]">
+        {/* The drawer's backdrop. Present only while it is open, and only on a phone. */}
+        {drawerOpen && (
+          <button
+            type="button"
+            aria-label="Close the menu"
+            onClick={() => setDrawerOpen(false)}
+            className="absolute inset-0 z-30 bg-black/60 backdrop-blur-[2px] lg:hidden"
+          />
+        )}
 
-        <Button variant="outline" className="justify-start" onClick={onNewTransformation}>
-          <Plus />
-          New transformation
-        </Button>
-
-        <nav aria-label="Recent transformations" className="flex min-h-0 flex-1 flex-col gap-1">
-          <h2 className="px-2 text-xs font-medium text-muted-foreground">Recent</h2>
-          <RecentJobs />
-        </nav>
-
-        <div className="border-t border-sidebar-border pt-3">
-          <ConnectionPanel />
+        {/* Anything tapped inside the drawer either navigates or acts, and then the drawer
+            has done its job, so the whole of it closes on click. */}
+        <div
+          onClick={() => setDrawerOpen(false)}
+          className={cn(
+            'absolute inset-y-0 left-0 z-40 w-[82%] max-w-[300px] transition-transform duration-200 ease-out lg:static lg:z-0 lg:w-[262px] lg:translate-x-0',
+            drawerOpen ? 'translate-x-0 shadow-2xl shadow-black/60' : '-translate-x-full',
+          )}
+        >
+          <Sidebar
+            onNewTransformation={onNewTransformation}
+            onConnect={onConnect}
+            onClose={() => setDrawerOpen(false)}
+          />
         </div>
-      </aside>
 
-      <div className="relative z-10 flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 items-center justify-between gap-3 px-4 md:hidden">
-          <Brand />
-          <ConnectionPill />
-        </header>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <header className="flex h-[52px] shrink-0 items-center gap-2 border-b border-rule px-3 lg:gap-3 lg:px-5">
+            <button
+              type="button"
+              aria-label="Open the menu"
+              onClick={() => setDrawerOpen(true)}
+              className="-ml-1 flex size-9 shrink-0 items-center justify-center rounded-[10px] text-dim transition-colors hover:text-foreground lg:hidden"
+            >
+              <Menu className="size-4.5" />
+            </button>
+            <div className="flex min-w-0 flex-1 items-center gap-2.5">{title}</div>
+            <div className="hidden lg:block">
+              <ModelPill />
+            </div>
+            <button
+              type="button"
+              aria-label="New transformation"
+              onClick={onNewTransformation}
+              className="-mr-1 flex size-9 shrink-0 items-center justify-center rounded-[10px] text-dim transition-colors hover:text-foreground lg:hidden"
+            >
+              <Plus className="size-4.5" />
+            </button>
+          </header>
 
-        <main className="mx-auto flex w-full max-w-5xl flex-col items-center px-4 pb-16 sm:px-8">
-          {children}
-        </main>
+          <div className="flex min-h-0 flex-1">
+            <div className="flex min-w-0 flex-1 flex-col">{children}</div>
+            {panel}
+          </div>
+        </div>
       </div>
     </div>
   )
 }
 
-function Brand({ className }: { className?: string }) {
+function Sidebar({
+  onNewTransformation,
+  onConnect,
+  onClose,
+}: {
+  onNewTransformation: () => void
+  onConnect: () => void
+  onClose: () => void
+}) {
+  const { data: connection } = useConnection()
+  const { disconnect, pending } = useDisconnect()
+
   return (
-    <div className={`flex items-center gap-2.5 ${className ?? ''}`}>
-      <span className="flex size-8 items-center justify-center rounded-lg bg-primary/15 text-primary ring-1 ring-primary/30">
-        <Regex className="size-4.5" />
-      </span>
-      <span className="font-medium tracking-tight">nl2regex</span>
-    </div>
+    <aside className="flex h-full w-full shrink-0 flex-col border-sidebar-border bg-sidebar lg:border-r">
+      {/* The window's own buttons. Decoration on the web, and the thing that makes it read as
+          an application rather than a page. A phone gets a way out of the drawer instead. */}
+      <div className="flex items-center gap-2 px-4 pt-4 pb-1 lg:pt-[15px]">
+        <span className="hidden items-center gap-2 lg:flex">
+          {[0, 1, 2].map((dot) => (
+            <span key={dot} className="size-[11px] rounded-full bg-[#2c3735]" />
+          ))}
+        </span>
+        <button
+          type="button"
+          aria-label="Close the menu"
+          onClick={onClose}
+          className="-ml-2 flex size-8 items-center justify-center rounded-[10px] text-dim lg:hidden"
+        >
+          <X className="size-4" />
+        </button>
+      </div>
+
+      <div className="flex items-center gap-2.5 px-3.5 py-3 lg:pt-3 lg:pb-2.5">
+        <span className="flex size-[26px] shrink-0 items-center justify-center rounded-lg bg-linear-150 from-primary/70 to-primary/25">
+          <span className="size-[9px] rotate-45 rounded-[2px] bg-[#05100e]" />
+        </span>
+        <div className="flex min-w-0 flex-col">
+          <span className="text-[14.5px] leading-tight font-semibold tracking-tight">nl2regex</span>
+          <span className="truncate text-[11px] text-dim">
+            {connection ? connection.bucket : 'No bucket connected'}
+          </span>
+        </div>
+        <ChevronDown className="ml-auto size-3.5 shrink-0 text-dim" />
+      </div>
+
+      <div className="flex flex-col gap-2 px-3 pb-2.5">
+        <button
+          type="button"
+          onClick={onNewTransformation}
+          className="tint flex items-center gap-2 rounded-[10px] px-3 py-2.5 text-left text-[13px] font-medium text-primary transition-colors hover:bg-primary/15"
+        >
+          <Plus className="size-3.5" />
+          New transformation
+        </button>
+        <button
+          type="button"
+          onClick={onConnect}
+          className="flex items-center gap-2 rounded-[10px] bg-[#0d1211] px-3 py-2 text-left text-[13px] text-dim inset-ring inset-ring-[#161e1c] transition-colors hover:text-foreground"
+        >
+          {connection ? <Search className="size-3.5" /> : <Plug className="size-3.5" />}
+          {connection ? 'Browse the bucket' : 'Connect an S3 bucket'}
+        </button>
+      </div>
+
+      <nav
+        aria-label="Recent transformations"
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto px-2 pt-1 pb-2.5"
+      >
+        <h2 className="eyebrow px-2 pt-2.5 pb-1.5 text-dim">Recent</h2>
+        <RecentJobs />
+      </nav>
+
+      {connection && (
+        <div className="flex items-center gap-2.5 border-t border-sidebar-border px-3.5 py-3">
+          <span className="flex size-[26px] shrink-0 items-center justify-center rounded-full bg-[#0e1312] text-[10px] font-medium text-dim inset-ring inset-ring-[#1b2422]">
+            S3
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[13px] leading-tight" title={connection.bucket}>
+              {connection.bucket}
+            </p>
+            <p className="text-[11px] text-dim">{connection.region} · read-only</p>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={disconnect}
+            disabled={pending}
+            aria-label="Disconnect"
+            title="Disconnect and forget the keys"
+          >
+            <Unplug className="size-3.5" />
+          </Button>
+        </div>
+      )}
+    </aside>
+  )
+}
+
+/** Which model writes the patterns, in the top right, as the design has it. */
+function ModelPill() {
+  const { data: config } = useConfig()
+  const available = config?.describe_available ?? false
+
+  return (
+    <span
+      className="flex shrink-0 items-center gap-2 rounded-full bg-[#0d1211] px-3 py-1.5 font-mono text-[11px] text-[#aab6b2] inset-ring inset-ring-[#1b2422]"
+      title={
+        available
+          ? 'The model that turns plain English into a pattern, and finds personal data'
+          : 'No API key on this server, so patterns must be typed'
+      }
+    >
+      <Diamond className={available ? 'text-primary' : 'text-dim'} filled={available} />
+      {config?.model ?? 'regex only'}
+    </span>
   )
 }

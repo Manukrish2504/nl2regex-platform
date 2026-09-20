@@ -49,8 +49,11 @@ def health(request):
 
 @api_view(["GET"])
 def config(request):
-    """What this server can do, so the UI offers only that."""
-    return Response({"describe_available": pattern_service().can_write})
+    """What this server can do, so the UI offers only that, and which model does it."""
+    available = pattern_service().can_write
+    return Response(
+        {"describe_available": available, "model": settings.LLM_MODEL if available else None}
+    )
 
 
 class ConnectRateThrottle(AnonRateThrottle):

@@ -21,13 +21,16 @@ asynchronously via Celery.
 docker compose up --build
 ```
 
+**One port is published, and everything is reached through it**, as it will be in production.
+Postgres, Redis, the API and the Spark cluster are on the compose network only.
+
 | Service | URL |
 |---|---|
 | UI | http://localhost:5173 |
-| API health | http://localhost:8000/api/health/ |
-| Flower (Celery workers, queues, tasks) | http://localhost:5555 |
-| Spark cluster (its workers and applications) | http://localhost:8080 |
-| Spark job (stages and tasks, only while a job runs) | http://localhost:4040 |
+| API health | http://localhost:5173/api/health/ |
+| Flower (Celery workers, queues, tasks) | http://localhost:5173/flower/ |
+| Spark cluster (its workers and applications) | http://localhost:5173/spark/ |
+| Spark job (stages and tasks, only while a job runs) | http://localhost:5173/spark-job/ |
 
 No `.env` is needed for local development; compose supplies dev-only defaults. To describe patterns
 in plain English, put `ANTHROPIC_API_KEY=...` in a git-ignored `.env` beside `docker-compose.yml`.
@@ -355,8 +358,11 @@ A range is the spread over repeated runs.
 
 ### Frontend
 
-React 19 with TypeScript, Tailwind CSS 4 and [shadcn/ui](https://ui.shadcn.com) components, in a
-dark theme driven by one set of CSS variables in `src/index.css`.
+React 19 with TypeScript, Tailwind CSS 4 and [shadcn/ui](https://ui.shadcn.com) primitives, built
+as a **desktop client**: one window on a near-black page, a sidebar, a title bar, and the work in
+the middle. The palette, spacing and radii come from a single design, and the type is Instrument
+Sans with Instrument Serif for the one hero line and JetBrains Mono for data, labels and patterns.
+All of it is CSS variables in `src/index.css`.
 
 ```
 src/components/ui/   shadcn primitives, plus prompt-input.tsx (the composer)
@@ -386,9 +392,14 @@ src/lib/             the fetch wrapper (typed ApiError) and small helpers
   a report as soon as Claude has answered, while Spark is still working: what was found, why,
   and how it was masked, or the mapping with the rows each spelling had. The rows each operation
   changed are filled in when the job ends, and only the columns it touched are tinted.
-- **A job page per job**, at `/jobs/:id`, so a refresh keeps your place and the sidebar's items are
-  real links. It polls every second while the job is queued or running and stops when it ends.
-  Routing is the browser's History API; two routes do not need a library.
+- **A job reads as a conversation**, at `/jobs/:id`: the request as it was made, then the answer —
+  the pattern with its explanation, or the report of what Claude found — and then the numbers. It
+  polls every second while the job runs and stops when it ends. Routing is the browser's History
+  API; two routes do not need a library.
+- **The rows are not a message.** They open in a panel beside the conversation, with its own
+  footer to page through them, because a result is millions of rows long.
+- **A phone gets the same application, not a stacked page.** The sidebar becomes a drawer over the
+  work, and the results a full-screen sheet that waits to be asked for.
 - **Results never arrive all at once.** The table asks for one page, keeps showing it while the next
   loads, and offers 25, 50 or 100 rows per page.
 - **Server state lives in TanStack Query.** A 401 from any request flips the app back to "not
@@ -397,9 +408,9 @@ src/lib/             the fetch wrapper (typed ApiError) and small helpers
   read once with `FormData` on submit and then reset. The submit is a plain async function rather
   than a TanStack mutation, because mutations keep their variables in a cache for minutes.
 
-| Claude writing the pattern | The results |
+| Claude writing the pattern | The result, in the panel beside the conversation |
 |---|---|
-| ![The job page while the pattern is written: the sentence, a skeleton, and a cancel button](assets/screenshots/job-writing.png) | ![The sentence, the pattern with its source and explanation, and the paginated result with the target column tinted](assets/screenshots/job-results.png) |
+| ![The job page while the pattern is written](assets/screenshots/job-writing.png) | ![The conversation on the left, the rows in the panel on the right](assets/screenshots/redact-results.png) |
 
 ![Live progress on a larger file, with a cancel button](assets/screenshots/job-running.png)
 

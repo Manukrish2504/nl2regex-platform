@@ -1,49 +1,73 @@
-import { useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { ChevronLeft, ChevronRight, CircleAlert, LoaderCircle, Plus } from 'lucide-react'
+import {
+  Check,
+  ChevronRight,
+  CircleAlert,
+  Copy,
+  LoaderCircle,
+  PanelRight,
+  RotateCcw,
+  Table2,
+} from 'lucide-react'
 
-import { DataTable } from '@/components/data-table'
+import { Diamond } from '@/components/diamond'
 import { Link } from '@/components/link'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useConnection } from '@/features/connection/api'
 import { ApiError } from '@/lib/api'
-import { fileName, resolveColumns } from '@/lib/utils'
+import { cn, duration, fileName } from '@/lib/utils'
 import {
   cancelJob,
   isActive,
-  KIND_LABELS,
   useJob,
-  useJobRows,
   type Job,
   type PiiReport,
   type StandardiseReport,
 } from './api'
-import { StatusBadge } from './status'
 
-const PAGE_SIZES = [25, 50, 100]
+interface JobPageProps {
+  jobId: string
+  panelOpen: boolean
+  onPanelOpenChange: (open: boolean) => void
+}
 
-export function JobPage({ jobId }: { jobId: string }) {
+/**
+ * One job, read as a conversation: what was asked, what the system decided, and what it did.
+ * The rows themselves live in the panel beside it, because a million rows are not a message.
+ */
+export function JobPage({ jobId, panelOpen, onPanelOpenChange }: JobPageProps) {
   const { data: connection, isPending: connectionPending } = useConnection()
   const job = useJob(jobId)
+  const finished = job.data?.status === 'SUCCESS'
+
+  // On a desktop the results open by themselves the moment there are any: there is room for
+  // them beside the conversation. On a phone they would cover it, so they wait to be asked.
+  useEffect(() => {
+    if (finished && window.matchMedia('(min-width: 1024px)').matches) onPanelOpenChange(true)
+  }, [finished, onPanelOpenChange])
 
   if (connectionPending || (connection && job.isPending)) {
     return (
-      <div className="flex w-full flex-col gap-4" aria-label="Loading the job">
-        <Skeleton className="h-8 w-64" />
-        <Skeleton className="h-28 w-full" />
+      <div className="flex flex-col gap-4 px-6 pt-10" aria-label="Loading the job">
+        <Skeleton className="h-6 w-56" />
+        <Skeleton className="h-24 w-full" />
       </div>
     )
   }
   if (!connection || job.isError) {
-    // A job belongs to the connection that created it, so both cases end in the same place.
     const notFound = job.error instanceof ApiError && job.error.status === 404
     return (
       <Unavailable
-        title={!connection ? 'Connect to see this job' : notFound ? 'This job is not available' : 'Could not load the job'}
+        title={
+          !connection
+            ? 'Connect to see this job'
+            : notFound
+              ? 'This job is not available'
+              : 'Could not load the job'
+        }
         message={
           !connection || notFound
             ? 'A job can only be opened from the connection that started it, and connections expire. Start a new transformation to run it again.'
@@ -52,12 +76,13 @@ export function JobPage({ jobId }: { jobId: string }) {
       />
     )
   }
-  return <JobView job={job.data!} />
+  return <Conversation job={job.data!} panelOpen={panelOpen} onPanelOpenChange={onPanelOpenChange} />
 }
 
-function JobView({ job }: { job: Job }) {
+function Conversation({ job, panelOpen, onPanelOpenChange }: { job: Job } & Omit<JobPageProps, 'jobId'>) {
   const queryClient = useQueryClient()
   const [cancelling, setCancelling] = useState(false)
+  const stopping = cancelling || job.cancel_requested
 
   async function handleCancel() {
     setCancelling(true)
@@ -67,116 +92,154 @@ function JobView({ job }: { job: Job }) {
     setCancelling(false)
   }
 
-  const stopping = cancelling || job.cancel_requested
-  // Until the pattern is written, an empty replacement or column list is not final: the sentence
-  // may state them ("... in the Email column ... with 'REDACTED'"), and they arrive with the pattern.
-  const awaitingSentence = Boolean(job.prompt) && !job.pattern && isActive(job)
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-6 py-8">
+          <Asked job={job} />
+          <Answer job={job} panelOpen={panelOpen} onPanelOpenChange={onPanelOpenChange} />
+        </div>
+      </div>
+
+      <div className="shrink-0 px-6 pb-5">
+        <div className="mx-auto w-full max-w-[720px]">
+          {isActive(job) ? (
+            <div
+              className="flex flex-col gap-2.5 rounded-[14px] bg-[#0b100f] p-3.5 shadow-[inset_0_0_0_1px_var(--surface-edge)]"
+              aria-live="polite"
+            >
+              <div className="flex items-center gap-2.5 text-[13px]">
+                <LoaderCircle className="size-3.5 shrink-0 animate-spin text-primary" />
+                <span className="min-w-0 flex-1 truncate">
+                  {stopping ? 'Stopping…' : job.stage}
+                </span>
+                {job.attempts > 1 && (
+                  <span className="font-mono text-[11px] text-dim">attempt {job.attempts}</span>
+                )}
+                <span className="font-mono text-[11px] text-dim tabular-nums">{job.progress}%</span>
+                <Button variant="ghost" size="sm" onClick={handleCancel} disabled={stopping}>
+                  Cancel
+                </Button>
+              </div>
+              <div className="h-[3px] overflow-hidden rounded-full bg-[#141b19]">
+                <div
+                  role="progressbar"
+                  aria-label="Job progress"
+                  aria-valuenow={job.progress}
+                  className="h-full rounded-full bg-primary transition-[width] duration-500"
+                  style={{ width: `${Math.max(job.progress, 2)}%` }}
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button asChild variant="outline" size="sm">
+                <Link href="/">
+                  <RotateCcw className="size-3.5" />
+                  New transformation
+                </Link>
+              </Button>
+              {job.status === 'SUCCESS' && !panelOpen && (
+                <Button variant="ghost" size="sm" onClick={() => onPanelOpenChange(true)}>
+                  <PanelRight className="size-3.5" />
+                  Show the rows
+                </Button>
+              )}
+            </div>
+          )}
+          <p className="pt-2.5 text-center text-[11px] text-dim">
+            Your file is never modified. Every job writes a separate copy, and the bucket is opened
+            read-only.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** The request, as the person made it. */
+function Asked({ job }: { job: Job }) {
+  const said =
+    job.kind === 'replace'
+      ? (job.prompt ?? job.pattern)
+      : job.kind === 'standardise'
+        ? `Standardise ${job.columns[0] ?? 'a column'}${job.prompt ? ` — ${job.prompt}` : ''}`
+        : 'Find the personal data in this file and mask it'
 
   return (
-    <div className="flex w-full flex-col gap-6">
-      <header className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <h1 className="min-w-0 truncate text-2xl font-medium tracking-tight" title={job.file_key}>
-            {fileName(job.file_key)}
-          </h1>
-          <StatusBadge status={job.status} />
-          <Button asChild variant="outline" size="sm" className="ml-auto rounded-full">
-            <Link href="/">
-              <Plus />
-              New transformation
-            </Link>
-          </Button>
-        </div>
-        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
-          {job.kind !== 'replace' && (
-            <>
-              <dt className="text-muted-foreground">Transformation</dt>
-              <dd>{KIND_LABELS[job.kind]}</dd>
-            </>
-          )}
-          {job.prompt && (
-            <>
-              <dt className="text-muted-foreground">{job.kind === 'replace' ? 'Asked' : 'Instruction'}</dt>
-              <dd className="min-w-0 break-words">“{job.prompt}”</dd>
-            </>
-          )}
-          {job.kind === 'replace' && (
-          <>
-          <dt className="text-muted-foreground">Find</dt>
-          <dd className="flex min-w-0 flex-col gap-1">
-            {job.pattern ? (
-              <span className="flex flex-wrap items-center gap-2">
-                <code className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.8rem] break-all">{job.pattern}</code>
-                {job.pattern_source !== 'user' && (
-                  <Badge
-                    variant="outline"
-                    title={
-                      job.pattern_source === 'cache'
-                        ? 'The same request was answered before, so no language model was called this time.'
-                        : 'Written by Claude from your sentence, then checked before it ran.'
-                    }
-                  >
-                    {job.pattern_source === 'cache' ? 'from cache' : 'written by Claude'}
-                  </Badge>
-                )}
-              </span>
-            ) : isActive(job) ? (
-              <Skeleton className="h-5 w-64" aria-label="The pattern is being written" />
-            ) : (
-              <span className="text-muted-foreground">no pattern was written</span>
-            )}
-            {job.explanation && <span className="text-xs text-muted-foreground">{job.explanation}</span>}
-          </dd>
-          <dt className="text-muted-foreground">Replace with</dt>
-          <dd className="min-w-0">
-            {job.replacement ? (
-              <code className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.8rem] break-all">{job.replacement}</code>
-            ) : (
-              <span className="text-muted-foreground">
-                {awaitingSentence ? 'being read from your sentence' : 'nothing (matches are removed)'}
-              </span>
-            )}
-          </dd>
-          </>
-          )}
-          <dt className="text-muted-foreground">In</dt>
-          <dd className="flex flex-wrap gap-1.5">
-            {job.columns.length ? (
-              job.columns.map((column) => (
-                <Badge key={column} variant="secondary">
-                  {column}
-                </Badge>
-              ))
-            ) : awaitingSentence ? (
-              <span className="text-muted-foreground">being read from your sentence</span>
-            ) : (
-              <span>every column</span>
-            )}
-          </dd>
-        </dl>
-      </header>
+    <div className="flex justify-end">
+      <p
+        className={cn(
+          'max-w-[85%] rounded-[13px] bg-[#0d1211] px-4 py-3 text-[15.5px] leading-relaxed inset-ring inset-ring-[#17201e]',
+          job.kind === 'replace' && !job.prompt && 'font-mono text-[13px]',
+        )}
+      >
+        {said}
+      </p>
+    </div>
+  )
+}
 
-      {isActive(job) && (
-        <section className="flex flex-col gap-3 rounded-2xl border border-border bg-card/60 p-5" aria-live="polite">
-          <div className="flex items-center justify-between gap-3 text-sm">
-            <span className="flex items-center gap-2">
-              <LoaderCircle className="size-4 animate-spin text-primary" />
-              {stopping ? 'Stopping…' : job.stage}
-              {job.attempts > 1 && <span className="text-muted-foreground">(attempt {job.attempts})</span>}
-            </span>
-            <span className="text-muted-foreground tabular-nums">{job.progress}%</span>
-          </div>
-          <Progress value={job.progress} className="h-1.5" aria-label="Job progress" />
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-xs text-muted-foreground">
-              This runs on a background worker. You can leave this page and come back from the sidebar.
-            </p>
-            <Button variant="outline" size="sm" onClick={handleCancel} disabled={stopping}>
-              Cancel
-            </Button>
-          </div>
-        </section>
+/** What the system decided and did, in the voice of the application. */
+function Answer({ job, panelOpen, onPanelOpenChange }: { job: Job } & Omit<JobPageProps, 'jobId'>) {
+  const writing = job.kind === 'replace' && Boolean(job.prompt) && !job.pattern
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="eyebrow flex items-center gap-2 text-primary">
+        <Diamond />
+        nl2regex
+      </p>
+
+      {job.kind === 'replace' && (
+        <div className="flex flex-col gap-2.5">
+          {writing ? (
+            <Skeleton
+              className="h-9 w-72 rounded-[10px]"
+              aria-label="The pattern is being written"
+            />
+          ) : (
+            <CodeCard
+              label={job.pattern_source === 'user' ? 'Your pattern' : 'Pattern'}
+              code={job.pattern}
+              badge={
+                job.pattern_source === 'user'
+                  ? undefined
+                  : job.pattern_source === 'cache'
+                    ? 'from cache'
+                    : 'written by Claude'
+              }
+            />
+          )}
+          {job.explanation && (
+            <p className="text-[15.5px] leading-relaxed text-[#cdd8d5]">{job.explanation}</p>
+          )}
+          <dl className="flex flex-wrap gap-x-6 gap-y-1 text-[13px]">
+            <div className="flex gap-2">
+              <dt className="text-dim">Replace with</dt>
+              <dd className="font-mono text-[12px]">
+                {job.replacement || (
+                  <span className="font-sans text-dim">
+                    {writing ? 'from your sentence' : 'nothing'}
+                  </span>
+                )}
+              </dd>
+            </div>
+            <div className="flex gap-2">
+              <dt className="text-dim">In</dt>
+              <dd>
+                {job.columns.length
+                  ? job.columns.join(', ')
+                  : writing
+                    ? 'from your sentence'
+                    : 'every column'}
+              </dd>
+            </div>
+          </dl>
+        </div>
       )}
+
+      {job.report && <Report job={job} />}
 
       {job.status === 'FAILED' && (
         <Alert variant="destructive">
@@ -187,183 +250,149 @@ function JobView({ job }: { job: Job }) {
       )}
 
       {job.status === 'CANCELLED' && (
-        <Alert>
-          <CircleAlert />
-          <AlertTitle>Cancelled at {job.progress}%</AlertTitle>
-          <AlertDescription>Nothing was kept. The partial output has been deleted.</AlertDescription>
-        </Alert>
+        <p className="text-[15.5px] text-[#98a5a1]">
+          Cancelled at {job.progress}%. Nothing was kept: the partial output has been deleted.
+        </p>
       )}
 
-      {job.report && <Report job={job} />}
+      {job.status === 'SUCCESS' &&
+        (job.rows_total ? (
+          <>
+            <Stats job={job} />
+            <button
+              type="button"
+              onClick={() => onPanelOpenChange(!panelOpen)}
+              className="flex items-center gap-3 rounded-[12px] bg-[#0a0f0e] px-3.5 py-3 text-left transition-colors inset-ring inset-ring-[#151d1b] hover:bg-[#0e1312]"
+            >
+              <span className="tint flex size-8 shrink-0 items-center justify-center rounded-[9px] text-primary">
+                <Table2 className="size-4" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[14px]">{fileName(job.file_key)}</span>
+                <span className="block text-[12px] text-dim">
+                  Result · {(job.rows_total ?? 0).toLocaleString()} rows ·{' '}
+                  {job.file_format === 'excel' ? 'from Excel' : 'from CSV'}
+                </span>
+              </span>
+              <ChevronRight className="size-4 shrink-0 text-dim" />
+            </button>
+          </>
+        ) : (
+          <p className="text-[15.5px] leading-relaxed text-[#98a5a1]">
+            That file has a header and no rows, so there was nothing to change.
+          </p>
+        ))}
 
-      {job.status === 'SUCCESS' && <Results job={job} />}
+      {!isActive(job) && job.started_at && job.finished_at && (
+        <p className="font-mono text-[11px] text-dim">
+          {job.status === 'SUCCESS' ? 'Done' : 'Stopped'} in{' '}
+          {duration(job.started_at, job.finished_at)}
+          {job.attempts > 1 ? ` · ${job.attempts} attempts` : ''}
+        </p>
+      )}
     </div>
   )
 }
 
-function Results({ job }: { job: Job }) {
-  const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(PAGE_SIZES[0])
-  const rows = useJobRows(job.id, page, pageSize, true)
-
+/** The numbers, as the design shows numbers: big, mono, one line of caption. */
+function Stats({ job }: { job: Job }) {
   const total = job.rows_total ?? 0
-  const lastPage = Math.max(1, Math.ceil(total / pageSize))
-  const first = (page - 1) * pageSize + 1
+  const changed = job.rows_changed ?? 0
+  const share = total ? Math.round((changed / total) * 100) : 0
 
   return (
-    <section className="flex flex-col gap-3">
-      <p className="text-sm text-muted-foreground">
-        <span className="font-medium text-foreground">{total.toLocaleString()}</span> rows processed,{' '}
-        <span className="font-medium text-foreground">{(job.rows_changed ?? 0).toLocaleString()}</span> changed.
-      </p>
-
-      {rows.isError ? (
-        <Alert variant="destructive">
-          <CircleAlert />
-          <AlertDescription>{rows.error.message}</AlertDescription>
-        </Alert>
-      ) : rows.data ? (
-        <DataTable
-          columns={rows.data.columns}
-          rows={rows.data.rows}
-          highlighted={resolveColumns(touchedColumns(job) ?? rows.data.columns, rows.data.columns)}
-          firstRowNumber={(rows.data.page - 1) * rows.data.page_size + 1}
-          className={rows.isPlaceholderData ? 'opacity-60 transition-opacity' : undefined}
-        />
-      ) : (
-        <Skeleton className="h-64 w-full" />
-      )}
-
-      {total > 0 && (
-        <nav aria-label="Result pages" className="flex flex-wrap items-center justify-between gap-3 text-sm">
-          <span className="text-muted-foreground tabular-nums">
-            Rows {first.toLocaleString()} to {Math.min(page * pageSize, total).toLocaleString()} of{' '}
-            {total.toLocaleString()}
+    <div className="grid grid-cols-2 gap-2.5">
+      {[
+        { value: total.toLocaleString(), caption: 'rows processed', accent: false },
+        { value: changed.toLocaleString(), caption: `rows changed · ${share}%`, accent: true },
+      ].map((card) => (
+        <div
+          key={card.caption}
+          className="flex flex-col gap-1.5 rounded-[12px] bg-[#0a0f0e] px-4 py-3.5 inset-ring inset-ring-[#151d1b]"
+        >
+          <span
+            className={cn(
+              'font-mono text-[26px] leading-none',
+              card.accent ? 'text-primary' : 'text-[#e2eae7]',
+            )}
+          >
+            {card.value}
           </span>
-          <div className="flex items-center gap-2">
-            <label className="flex items-center gap-2 text-muted-foreground">
-              Rows per page
-              <select
-                value={pageSize}
-                onChange={(event) => {
-                  setPageSize(Number(event.target.value))
-                  setPage(1)
-                }}
-                className="h-8 rounded-lg border border-input bg-transparent px-2 text-foreground"
-              >
-                {PAGE_SIZES.map((size) => (
-                  <option key={size} value={size}>
-                    {size}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <Button variant="outline" size="icon" onClick={() => setPage(page - 1)} disabled={page <= 1} aria-label="Previous page">
-              <ChevronLeft />
-            </Button>
-            <span className="tabular-nums">
-              Page {page.toLocaleString()} of {lastPage.toLocaleString()}
-            </span>
-            <Button variant="outline" size="icon" onClick={() => setPage(page + 1)} disabled={page >= lastPage} aria-label="Next page">
-              <ChevronRight />
-            </Button>
-          </div>
-        </nav>
-      )}
-    </section>
+          <span className="text-[12px] text-dim">{card.caption}</span>
+        </div>
+      ))}
+    </div>
   )
 }
 
-/** The columns a job changed, or null for "every column". */
-function touchedColumns(job: Job): string[] | null {
-  if (job.kind === 'redact_pii' && job.report) {
-    return (job.report as PiiReport).operations.flatMap((operation) => operation.columns)
-  }
-  return job.columns.length ? job.columns : null
-}
-
-/** What Claude decided, and what that changed. Shown as soon as it is decided, while Spark works. */
+/** What Claude decided, for the two transformations it plans. */
 function Report({ job }: { job: Job }) {
-  const count = (rows?: number) => (rows === undefined ? '…' : rows.toLocaleString())
-  const cached = job.report!.from_cache && (
-    <Badge variant="outline" title="The same question was answered before, so Claude was not called this time.">
-      from cache
-    </Badge>
-  )
+  const cached = job.report!.from_cache
 
   if (job.kind === 'standardise') {
     const report = job.report as StandardiseReport
     return (
-      <section className="flex flex-col gap-2" aria-label="What was standardised">
-        <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+      <section className="flex flex-col gap-2.5" aria-label="What was standardised">
+        <p className="flex flex-wrap items-center gap-2 text-[15.5px] leading-relaxed text-[#cdd8d5]">
           <span>
-            <span className="font-medium text-foreground">{report.distinct_before}</span> different values in{' '}
-            <span className="font-medium text-foreground">{report.column}</span> became{' '}
-            <span className="font-medium text-foreground">{report.distinct_after}</span>.
+            <span className="font-mono text-primary">{report.distinct_before}</span> different
+            values in <span className="text-foreground">{report.column}</span> became{' '}
+            <span className="font-mono text-primary">{report.distinct_after}</span>.
           </span>
-          {cached}
+          {cached && <CacheBadge />}
         </p>
-        <div className="overflow-hidden rounded-xl border border-border bg-card/60">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/40 text-left text-muted-foreground">
-              <tr>
-                <th className="px-3 py-2 font-medium">Was</th>
-                <th className="px-3 py-2 font-medium">Became</th>
-                <th className="px-3 py-2 text-right font-medium">Rows</th>
-              </tr>
-            </thead>
-            <tbody>
-              {report.mapping.map((entry) => (
-                <tr key={entry.from} className="border-t border-border">
-                  <td className="px-3 py-1.5 font-mono text-[0.8rem]">{entry.from}</td>
-                  <td className="px-3 py-1.5 font-medium">{entry.to}</td>
-                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">
-                    {entry.rows.toLocaleString()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <ReportTable
+          head={['Was', 'Became', 'Rows']}
+          rows={report.mapping.map((entry) => [
+            <span key="from" className="font-mono text-[12px] text-[#98a5a1]">
+              {entry.from}
+            </span>,
+            entry.to,
+            <span key="rows" className="font-mono text-[12px] text-dim tabular-nums">
+              {entry.rows.toLocaleString()}
+            </span>,
+          ])}
+          alignLast
+        />
       </section>
     )
   }
 
   const report = job.report as PiiReport
-  const placeholder = (kind: string) => report.operations.find((operation) => operation.kind === kind)?.placeholder
+  const placeholder = (kind: string) =>
+    report.operations.find((operation) => operation.kind === kind)?.placeholder
   return (
-    <section className="flex flex-col gap-2" aria-label="What was found">
-      <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-        <span>Claude saw column names and the shapes of values, never a value, and found:</span>
-        {cached}
+    <section className="flex flex-col gap-2.5" aria-label="What was found">
+      <p className="flex flex-wrap items-center gap-2 text-[15.5px] leading-relaxed text-[#cdd8d5]">
+        <span>
+          Claude saw column names and the shapes of values, never a value, and found personal data
+          in {report.findings.length} place{report.findings.length === 1 ? '' : 's'}:
+        </span>
+        {cached && <CacheBadge />}
       </p>
-      <div className="overflow-hidden rounded-xl border border-border bg-card/60">
-        <table className="w-full text-sm">
-          <thead className="bg-muted/40 text-left text-muted-foreground">
-            <tr>
-              <th className="px-3 py-2 font-medium">Column</th>
-              <th className="px-3 py-2 font-medium">Holds</th>
-              <th className="px-3 py-2 font-medium">Because</th>
-              <th className="px-3 py-2 font-medium">Masked as</th>
-            </tr>
-          </thead>
-          <tbody>
-            {report.findings.map((finding) => (
-              <tr key={`${finding.column}:${finding.kind}`} className="border-t border-border">
-                <td className="px-3 py-1.5 font-medium">{finding.column}</td>
-                <td className="px-3 py-1.5">{finding.kind.replace('_', ' ')}</td>
-                <td className="px-3 py-1.5 text-muted-foreground">{finding.reason}</td>
-                <td className="px-3 py-1.5 font-mono text-[0.8rem]">{placeholder(finding.kind)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+      <ReportTable
+        head={['Column', 'Holds', 'Because', 'Masked as']}
+        rows={report.findings.map((finding) => [
+          finding.column,
+          <span key="kind" className="text-[#98a5a1]">
+            {finding.kind.replace('_', ' ')}
+          </span>,
+          <span key="reason" className="text-dim">
+            {finding.reason}
+          </span>,
+          <span key="placeholder" className="font-mono text-[12px] text-primary">
+            {placeholder(finding.kind)}
+          </span>,
+        ])}
+      />
+      <p className="flex flex-wrap gap-x-5 gap-y-1 font-mono text-[11px] text-dim">
         {report.operations.map((operation) => (
           <span key={operation.kind}>
-            <span className="font-mono text-foreground">{operation.placeholder}</span> in{' '}
-            {count(operation.rows_changed)} rows
+            <span className="text-primary">{operation.placeholder}</span> in{' '}
+            {operation.rows_changed === undefined
+              ? '…'
+              : operation.rows_changed.toLocaleString()}{' '}
+            rows
           </span>
         ))}
       </p>
@@ -371,16 +400,106 @@ function Report({ job }: { job: Job }) {
   )
 }
 
+function ReportTable({
+  head,
+  rows,
+  alignLast,
+}: {
+  head: string[]
+  rows: ReactNode[][]
+  alignLast?: boolean
+}) {
+  return (
+    <div className="overflow-hidden rounded-[12px] bg-[#0a0f0e] inset-ring inset-ring-[#151d1b]">
+      <table className="w-full text-[13px]">
+        <thead className="text-left text-dim">
+          <tr className="border-b border-rule">
+            {head.map((label, index) => (
+              <th
+                key={label}
+                className={cn(
+                  'px-3.5 py-2 font-medium whitespace-nowrap',
+                  alignLast && index === head.length - 1 && 'text-right',
+                )}
+              >
+                {label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, rowIndex) => (
+            <tr key={rowIndex} className="border-b border-rule/60 last:border-0">
+              {row.map((cell, index) => (
+                <td
+                  key={index}
+                  className={cn(
+                    'px-3.5 py-2',
+                    alignLast && index === row.length - 1 && 'text-right',
+                  )}
+                >
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function CacheBadge() {
+  return (
+    <span
+      className="rounded-full bg-[#0e1312] px-2 py-0.5 font-mono text-[11px] text-dim inset-ring inset-ring-[#1b2422]"
+      title="The same question was answered before, so Claude was not called this time."
+    >
+      from cache
+    </span>
+  )
+}
+
+/** A block of code with its own header, as the design has it. */
+function CodeCard({ label, code, badge }: { label: string; code: string; badge?: string }) {
+  const [copied, setCopied] = useState(false)
+
+  return (
+    <div className="overflow-hidden rounded-[12px] bg-[#0a0f0e] inset-ring inset-ring-[#151d1b]">
+      <div className="flex items-center gap-2 border-b border-rule px-3.5 py-2">
+        <span className="eyebrow text-dim">{label}</span>
+        {badge && (
+          <span className="tint rounded-full px-2 py-0.5 font-mono text-[10px] text-primary">
+            {badge}
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            navigator.clipboard?.writeText(code)
+            setCopied(true)
+            setTimeout(() => setCopied(false), 1500)
+          }}
+          className="ml-auto flex items-center gap-1.5 text-[11px] text-dim transition-colors hover:text-foreground"
+        >
+          {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <pre className="overflow-x-auto px-3.5 py-3 font-mono text-[12.5px] leading-relaxed text-[#cdd8d5]">
+        {code}
+      </pre>
+    </div>
+  )
+}
+
 function Unavailable({ title, message }: { title: string; message: string }) {
   return (
-    <div className="flex w-full flex-col items-center gap-4 pt-[10vh] text-center">
-      <h1 className="text-2xl font-medium tracking-tight">{title}</h1>
-      <p className="max-w-md text-balance text-muted-foreground">{message}</p>
+    <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
+      <h1 className="font-heading text-[28px] text-[#eef4f1]">{title}</h1>
+      <p className="max-w-md text-[15.5px] leading-relaxed text-balance text-[#98a5a1]">{message}</p>
       <Button asChild>
-        <Link href="/">
-          <Plus />
-          New transformation
-        </Link>
+        <Link href="/">New transformation</Link>
       </Button>
     </div>
   )

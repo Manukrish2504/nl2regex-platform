@@ -1,8 +1,15 @@
-import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import type { JobStatus } from './api'
 
-const LABELS: Record<JobStatus, string> = {
+const COLOURS: Record<JobStatus, string> = {
+  QUEUED: 'bg-dim',
+  RUNNING: 'bg-primary',
+  SUCCESS: 'bg-primary',
+  FAILED: 'bg-destructive',
+  CANCELLED: 'bg-dim',
+}
+
+const WORDS: Record<JobStatus, string> = {
   QUEUED: 'Queued',
   RUNNING: 'Running',
   SUCCESS: 'Done',
@@ -10,26 +17,38 @@ const LABELS: Record<JobStatus, string> = {
   CANCELLED: 'Cancelled',
 }
 
-const DOT_COLOURS: Record<JobStatus, string> = {
-  QUEUED: 'bg-muted-foreground',
-  RUNNING: 'bg-primary animate-pulse',
-  SUCCESS: 'bg-primary',
-  FAILED: 'bg-destructive',
-  CANCELLED: 'bg-muted-foreground/50',
-}
-
-export function StatusDot({ status }: { status: JobStatus }) {
+/** A job's state as one dot, for a list. It pulses while the job is running. */
+export function StatusDot({ status, className }: { status: JobStatus; className?: string }) {
   return (
     <span
-      className={cn('size-2 shrink-0 rounded-full', DOT_COLOURS[status])}
+      className={cn(
+        'size-[7px] shrink-0 rounded-full',
+        COLOURS[status],
+        status === 'RUNNING' && 'animate-pulse',
+        className,
+      )}
       role="img"
-      aria-label={LABELS[status]}
+      aria-label={WORDS[status]}
+      title={WORDS[status]}
     />
   )
 }
 
+/** The same, with the word beside it. */
 export function StatusBadge({ status }: { status: JobStatus }) {
-  const variant =
-    status === 'FAILED' ? 'destructive' : status === 'RUNNING' || status === 'SUCCESS' ? 'default' : 'secondary'
-  return <Badge variant={variant}>{LABELS[status]}</Badge>
+  return (
+    <span
+      className={cn(
+        'flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 font-mono text-[11px]',
+        status === 'FAILED'
+          ? 'bg-destructive/10 text-destructive'
+          : status === 'SUCCESS' || status === 'RUNNING'
+            ? 'tint text-primary'
+            : 'bg-[#0e1312] text-dim inset-ring inset-ring-[#1b2422]',
+      )}
+    >
+      <StatusDot status={status} />
+      {WORDS[status]}
+    </span>
+  )
 }
