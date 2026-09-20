@@ -1,13 +1,25 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fakes import FakeEngine, FakeJobs, FakeQueue, FakeResults, FakeStorage, FakeVault
+from fakes import (
+    FakeEngine,
+    FakeJobs,
+    FakePatternCache,
+    FakeProbe,
+    FakeQueue,
+    FakeResults,
+    FakeStorage,
+    FakeVault,
+    FakeWriter,
+)
 
 from domain import errors
 from domain.connections import S3Credentials
 from domain.jobs import JobCancelled, JobStatus, RetryLater, TransformResult
+from domain.patterns import PatternSuggestion
 from services.connections import ConnectionService
 from services.jobs import JobService
+from services.patterns import PatternService
 
 CREDENTIALS = S3Credentials("AKIAEXAMPLEEXAMPLE00", "not-a-real-secret-key")
 START = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
@@ -16,18 +28,20 @@ START = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
 class World:
     """One service wired to fakes, plus a connected browser token."""
 
-    def __init__(self, engine=None, results=None):
+    def __init__(self, engine=None, results=None, writer=None, probe=None):
         self.clock = START
         self.vault = FakeVault()
         self.connections = ConnectionService(FakeStorage(), self.vault)
         self.jobs, self.queue = FakeJobs(), FakeQueue()
         self.engine, self.results = engine or FakeEngine(), results or FakeResults()
+        self.writer, self.probe = writer or FakeWriter(), probe or FakeProbe()
         self.service = JobService(
             self.connections,
             self.jobs,
             self.queue,
             self.engine,
             self.results,
+            PatternService(self.writer, FakePatternCache(), self.probe),
             max_active_jobs=3,
             max_attempts=3,
             stale_after=timedelta(minutes=17),
@@ -374,3 +388,105 @@ def test_forgetting_a_connection_stops_its_jobs_and_deletes_their_output():
     assert {finished.id, queued.id} <= set(world.results.deleted)
 
     world.service.forget_jobs("expired-token")  # nothing to do, and no error
+
+
+# --- a job that comes as a prompt --------------------------------------------------------------
+
+EMAILS = PatternSuggestion(
+    pattern=r"\S+@\S+",
+    explanation="Matches e-mail addresses such as a@x.com.",
+    replacement="REDACTED",
+    columns=["Email"],
+    should_match=["write to a@x.com"],
+    should_not_match=["no address here"],
+)
+REQUEST = {"pattern": "", "prompt": "find email addresses", "replacement": "", "columns": []}
+
+
+def test_a_prompt_is_queued_without_calling_the_language_model():
+    world = World(writer=FakeWriter(EMAILS))
+    job = world.submit(**REQUEST)
+
+    assert (job.prompt, job.pattern, job.pattern_source) == ("find email addresses", "", "llm")
+    assert world.writer.calls == []  # that call belongs to the worker, not to the request
+
+
+def test_the_worker_writes_the_pattern_and_the_engine_runs_with_it():
+    world = World(writer=FakeWriter(EMAILS))
+    job = world.submit(**REQUEST)
+    seen = {}
+    world.engine.during = lambda running, _cancel: seen.update(pattern=running.pattern)
+    world.service.run(job.id)
+
+    done = world.jobs.get(job.id)
+    assert seen["pattern"] == EMAILS.pattern
+    assert (done.status, done.pattern, done.pattern_source) == (
+        JobStatus.SUCCESS,
+        EMAILS.pattern,
+        "llm",
+    )
+    assert done.explanation == EMAILS.explanation
+    # The request stated a replacement and a column, and the user had filled in neither.
+    assert (done.replacement, done.columns) == ("REDACTED", ["Email"])
+
+
+def test_what_the_user_filled_in_beats_what_the_request_says():
+    world = World(writer=FakeWriter(EMAILS))
+    job = world.submit(**REQUEST | {"replacement": "***", "columns": ["notes"]})
+    world.service.run(job.id)
+
+    done = world.jobs.get(job.id)
+    assert (done.replacement, done.columns) == ("***", ["notes"])
+
+
+def test_a_retry_reuses_the_pattern_already_written():
+    world = World(engine=FakeEngine(error=errors.StorageUnreachable()), writer=FakeWriter(EMAILS))
+    job = world.submit(**REQUEST)
+    for _ in range(2):
+        with pytest.raises(RetryLater):
+            world.service.run(job.id)
+
+    assert len(world.writer.calls) == 1  # the second attempt found the pattern on the job
+
+
+def test_an_unreachable_language_model_takes_the_retry_path():
+    world = World(writer=FakeWriter(errors.LLMUnavailable()))
+    job = world.submit(**REQUEST)
+    with pytest.raises(RetryLater):
+        world.service.run(job.id)
+
+    waiting = world.jobs.get(job.id)
+    assert waiting.status is JobStatus.QUEUED
+    assert "language model could not be reached" in waiting.stage
+    assert world.engine.runs == 0
+
+
+def test_a_request_that_is_not_about_a_pattern_fails_the_job_with_the_reason():
+    refusal = errors.PatternNotUnderstood("It asks about the weather.")
+    world = World(writer=FakeWriter(refusal))
+    job = world.submit(**REQUEST | {"prompt": "what is the weather today"})
+    world.service.run(job.id)
+
+    failed = world.jobs.get(job.id)
+    assert (failed.status, failed.error_code) == (JobStatus.FAILED, "pattern_not_understood")
+    assert "It asks about the weather." in failed.error_message
+    assert world.engine.runs == 0
+
+
+def test_a_typed_pattern_that_could_hang_is_refused_before_any_data_is_read():
+    world = World(probe=FakeProbe(unsafe=[r"(a+)+$"]))
+    job = world.submit(pattern=r"(a+)+$")
+    world.service.run(job.id)
+
+    failed = world.jobs.get(job.id)
+    assert (failed.status, failed.error_code) == (JobStatus.FAILED, "unsafe_pattern")
+    assert world.engine.runs == 0
+
+
+def test_a_prompt_is_refused_at_once_when_no_language_model_is_configured():
+    writer = FakeWriter()
+    writer.is_configured = False
+    world = World(writer=writer)
+    with pytest.raises(errors.LLMNotConfigured):
+        world.submit(**REQUEST)
+    assert world.queue.jobs == []

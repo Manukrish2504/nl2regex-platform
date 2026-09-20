@@ -4,6 +4,7 @@ from . import views
 
 urlpatterns = [
     path("health/", views.health),
+    path("config/", views.config),
     path("connection/", views.ConnectionView.as_view()),
     path("connection/files/", views.FileListView.as_view()),
     path("connection/files/preview/", views.FilePreviewView.as_view()),

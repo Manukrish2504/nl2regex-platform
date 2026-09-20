@@ -26,8 +26,10 @@ class FileListQuerySerializer(serializers.Serializer):
 
 class JobSubmitSerializer(serializers.Serializer):
     file_key = serializers.CharField(max_length=1024, trim_whitespace=False)
-    # Whitespace matters in a pattern and in a replacement, so neither is trimmed.
-    pattern = serializers.CharField(max_length=1000, trim_whitespace=False)
+    # One of the two. Whitespace matters in a pattern and in a replacement, so neither is trimmed.
+    pattern = serializers.CharField(max_length=1000, trim_whitespace=False, required=False)
+    # A plain-English request. Capped, because it is sent to a language model on the server's bill.
+    prompt = serializers.CharField(min_length=3, max_length=500, required=False)
     replacement = serializers.CharField(
         max_length=1000, allow_blank=True, trim_whitespace=False, default=""
     )
@@ -36,6 +38,11 @@ class JobSubmitSerializer(serializers.Serializer):
         max_length=500,
         default=list,
     )
+
+    def validate(self, data):
+        if ("pattern" in data) == ("prompt" in data):
+            raise serializers.ValidationError("Give either a pattern or a prompt, not both.")
+        return data
 
 
 class PageQuerySerializer(serializers.Serializer):

@@ -6,6 +6,7 @@ from enum import Enum
 
 from domain.connections import FileFormat
 from domain.errors import InvalidTransition
+from domain.patterns import PatternSuggestion
 
 
 class JobStatus(Enum):
@@ -27,10 +28,13 @@ class Job:
     connection_id: str
     file_key: str
     file_format: FileFormat
-    pattern: str
+    pattern: str  # empty until a worker has written it, when the job was given a prompt instead
     replacement: str  # always literal text, never a template with backreferences
     columns: list[str]  # empty means every column
     created_at: datetime
+    prompt: str | None = None  # the plain-English request, if the pattern was not typed
+    explanation: str | None = None  # what the written pattern matches, in one sentence
+    pattern_source: str = "user"  # "user", "llm", or "cache" for an llm answer served again
     status: JobStatus = JobStatus.QUEUED
     progress: int = 0  # percent
     stage: str = "Waiting for a worker"
@@ -54,6 +58,25 @@ class Job:
             and self.started_at is not None
             and now - self.started_at > limit
         )
+
+    @property
+    def needs_pattern(self) -> bool:
+        return bool(self.prompt) and not self.pattern
+
+    def adopt(self, suggestion: PatternSuggestion, from_cache: bool) -> None:
+        """Take the pattern written for this job's prompt.
+
+        A request such as "replace emails in the Email column with REDACTED" also states a
+        replacement and a column. Those fill a field the user left empty, and never override one
+        the user filled in.
+        """
+        self.pattern = suggestion.pattern
+        self.explanation = suggestion.explanation
+        self.pattern_source = "cache" if from_cache else "llm"
+        if not self.replacement and suggestion.replacement:
+            self.replacement = suggestion.replacement
+        if not self.columns and suggestion.columns:
+            self.columns = list(suggestion.columns)
 
     def start(self, now: datetime) -> None:
         """Begin an attempt. From RUNNING this is a takeover after the previous worker died."""

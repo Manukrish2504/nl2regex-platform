@@ -129,3 +129,46 @@ class FakeResults:
 
     def purge_older_than(self, seconds):
         pass
+
+
+class FakeWriter:
+    """Stands in for the language model. Answers come from a list, one per call."""
+
+    is_configured = True
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.calls = []  # (request, rejected) for every call made
+
+    def write(self, request, rejected=None):
+        self.calls.append((request, rejected))
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+class FakePatternCache:
+    def __init__(self):
+        self.entries = {}
+
+    def get(self, request):
+        return self.entries.get(request)
+
+    def put(self, request, suggestion):
+        self.entries[request] = suggestion
+
+
+class FakeProbe:
+    """Refuses exactly the patterns it is told are unsafe."""
+
+    def __init__(self, unsafe=()):
+        self.unsafe = set(unsafe)
+        self.checked = []
+
+    def check(self, pattern):
+        from domain.errors import UnsafePattern
+
+        self.checked.append(pattern)
+        if pattern in self.unsafe:
+            raise UnsafePattern("it did not finish on the input 'aaaa!'")

@@ -3,6 +3,7 @@ name = "nl2regex-backend"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
+    "anthropic>=1.7.0",
     "boto3>=1.43.98",
     "celery[redis]>=5.6.3",
     "cryptography>=50.0.1",

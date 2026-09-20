@@ -176,6 +176,16 @@ def test_unreadable_files_fail_with_a_clear_error(run, put_object, body, expecte
         run(job_for(put_object("c.csv", body)))
 
 
+def test_a_column_is_found_whatever_its_case_spacing_or_underscores(run, put_object):
+    key = put_object("c.csv", b"First_Name,E-Mail,email\nZoe,a@x.com,b@y.org\n")
+    # "email" names the column spelt exactly that way, not the look-alike before it.
+    _, _, rows, _ = run(job_for(key, pattern="[a-z]+", columns=["first name", "email"]))
+    assert rows == [["ZREDACTED", "a@x.com", "REDACTED@REDACTED.REDACTED"]]
+
+    _, _, rows, _ = run(job_for(key, pattern="[a-z]+", columns=["e mail"]))
+    assert rows == [["Zoe", "REDACTED@REDACTED.REDACTED", "b@y.org"]]
+
+
 def test_a_missing_column_is_named_in_the_error(run, put_object):
     key = put_object("c.csv", b"id,email\n1,a@x.com\n")
     with pytest.raises(errors.ColumnNotFound, match="'emial'"):

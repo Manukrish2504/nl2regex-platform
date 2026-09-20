@@ -179,3 +179,90 @@ def test_file_preview_is_polled_until_the_worker_has_read_the_file(client, queue
 
     assert client.get(url, {"key": "notes.txt"}).status_code == 400
     assert client.get(url).status_code == 400
+
+
+# --- a job described in plain English ------------------------------------------------------
+
+
+@pytest.fixture
+def language_model(settings):
+    """A server with an API key, and a stand-in for the model behind it."""
+    from fakes import FakeWriter
+
+    from config import container
+    from domain.patterns import PatternSuggestion
+
+    settings.ANTHROPIC_API_KEY = "sk-ant-test"
+    writer = FakeWriter(
+        PatternSuggestion(
+            pattern=r"\S+@\S+",
+            explanation="Matches e-mail addresses.",
+            replacement="REDACTED",
+            columns=["Email"],
+            should_match=["a@x.com"],
+            should_not_match=["nothing"],
+        )
+    )
+    container.pattern_service.cache_clear()
+    container.job_service.cache_clear()
+    with patch("infrastructure.claude_pattern_writer.ClaudePatternWriter", return_value=writer):
+        yield writer
+
+
+def test_the_config_endpoint_says_whether_prompts_can_be_used(client, settings):
+    assert client.get("/api/config/").json() == {"describe_available": False}
+
+
+def test_the_config_endpoint_with_a_key(client, language_model):
+    assert client.get("/api/config/").json() == {"describe_available": True}
+
+
+def test_a_prompt_alone_is_queued_and_the_model_is_not_called_by_the_request(
+    client, queue, language_model
+):
+    body = {"file_key": "data.csv", "prompt": "Find email addresses in the Email column."}
+    response = client.post("/api/jobs/", body, format="json")
+
+    assert response.status_code == 202
+    job = response.json()
+    assert (job["prompt"], job["pattern"], job["pattern_source"]) == (body["prompt"], "", "llm")
+    assert job["explanation"] is None
+    assert language_model.calls == []
+
+
+def test_a_worker_fills_in_the_pattern_and_the_api_shows_where_it_came_from(
+    client, queue, language_model
+):
+    body = {"file_key": "data.csv", "prompt": "Find email addresses in the Email column."}
+    job_id = client.post("/api/jobs/", body, format="json").json()["id"]
+    run_job.apply(args=[job_id])
+
+    job = client.get(f"/api/jobs/{job_id}/").json()
+    assert (job["status"], job["pattern"], job["pattern_source"]) == ("SUCCESS", r"\S+@\S+", "llm")
+    assert job["explanation"] == "Matches e-mail addresses."
+    # "the Email column" found the file's `email` column, and the stated replacement was used.
+    assert (job["columns"], job["replacement"]) == (["Email"], "REDACTED")
+    rows = client.get(f"/api/jobs/{job_id}/rows/").json()["rows"]
+    assert rows[0] == ["0", "REDACTED"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"file_key": "data.csv"},
+        {"file_key": "data.csv", "pattern": "a", "prompt": "find the letter a"},
+        {"file_key": "data.csv", "prompt": "ab"},
+        {"file_key": "data.csv", "prompt": "x" * 501},
+    ],
+)
+def test_a_job_needs_exactly_one_of_pattern_and_prompt(client, queue, language_model, body):
+    assert client.post("/api/jobs/", body, format="json").status_code == 400
+
+
+def test_a_prompt_is_refused_when_the_server_has_no_api_key(client, queue):
+    body = {"file_key": "data.csv", "prompt": "find email addresses"}
+    response = client.post("/api/jobs/", body, format="json")
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "llm_not_configured"
+    queue["jobs"].assert_not_called()

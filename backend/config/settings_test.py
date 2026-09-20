@@ -22,3 +22,6 @@ CACHES = {
 # The API and task tests run the reference engine, so they need no JVM. The Spark engine has
 # its own tests, which build it directly.
 TRANSFORM_ENGINE = "streaming"
+
+# No test may reach a language model, whatever the developer's environment holds.
+ANTHROPIC_API_KEY = ""
