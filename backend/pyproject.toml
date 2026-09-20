@@ -1,0 +1,12 @@
+[project]
+name = "nl2regex-backend"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "celery[redis]>=5.6.3",
+    "django>=5.2,<6",
+    "djangorestframework>=3.18.1",
+    "flower>=2.1.0",
+    "gunicorn>=26.2.0",
+    "psycopg[binary]>=3.3.6",
+]
