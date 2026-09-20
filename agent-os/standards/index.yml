@@ -1,0 +1,35 @@
+# Agent OS standards for nl2regex-platform.
+# One line per standard, so they can be matched and injected without reading them all.
+# Rebuild with /index-standards; inject with /inject-standards.
+
+api:
+  http:
+    description: Thin views, named response fields, one error envelope, JSON-only parsing, the connection cookie, what to throttle
+
+backend:
+  engines:
+    description: Rules every transform engine obeys (text cells, literal replacement, column matching) and the Spark-specific ones
+  errors:
+    description: Failures as domain objects with a stable code, translated once at the adapter, transient against permanent
+  jobs:
+    description: The job state machine on the entity, compare-and-set persistence, ownership, and the Celery settings behind them
+  llm:
+    description: Send the least the question allows, never per row, never trust the answer, and how the cache key and model choice work
+  secrets:
+    description: Where the user's AWS keys and the API key may and may not appear, and how to verify that by counting
+
+frontend:
+  structure:
+    description: A folder per feature, server state in TanStack Query, no secret in React state, and saying what will be sent
+
+global:
+  comments:
+    description: Comments say why, not what, and ponytail markers name a ceiling and a trigger
+  composition-root:
+    description: config/container.py is the only place that wires adapters into services
+  layers:
+    description: The four layers, which way imports may point, and the test that enforces it
+
+testing:
+  approach:
+    description: Fakes for services, the wire for adapters, the real thing for tasks, both engines for behaviour, and mutation checks
