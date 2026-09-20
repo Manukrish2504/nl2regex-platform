@@ -1,0 +1,11 @@
+# The assessment brief is the company's material, keep it out of the public repo
+Docs/Task/
+
+.DS_Store
+.env
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+dist/
+.pytest_cache/
