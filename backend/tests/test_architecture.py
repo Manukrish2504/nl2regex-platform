@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 BACKEND = Path(__file__).resolve().parent.parent
-PROJECT_PACKAGES = {"api", "config", "domain", "infrastructure", "services"}
+PROJECT_PACKAGES = {"api", "config", "domain", "infrastructure", "services", "tasks"}
 
 # layer -> project packages it may import. Third-party imports are governed by STDLIB_ONLY.
 ALLOWED = {
@@ -15,6 +15,8 @@ ALLOWED = {
     "services": {"domain", "services"},
     "infrastructure": {"domain", "infrastructure"},
     "api": {"api", "config", "domain", "services"},
+    # The worker's entry points follow the same rule as the API's: go through a service.
+    "tasks": {"tasks", "config", "domain", "services"},
 }
 STDLIB_ONLY = {"domain", "services"}
 

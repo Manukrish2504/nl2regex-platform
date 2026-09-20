@@ -11,9 +11,17 @@ logger = logging.getLogger(__name__)
 _STATUS_BY_DOMAIN_ERROR = {
     errors.InvalidCredentials: 400,
     errors.InvalidPageToken: 400,
+    errors.InvalidPattern: 400,
+    errors.UnsupportedFile: 400,
     errors.ConnectionNotFound: 401,
     errors.BucketAccessDenied: 403,
     errors.BucketNotFound: 404,
+    errors.JobNotFound: 404,
+    errors.ObjectNotFound: 404,
+    errors.InvalidTransition: 409,
+    errors.JobNotFinished: 409,
+    errors.ResultsExpired: 410,
+    errors.TooManyActiveJobs: 429,
     errors.StorageUnreachable: 502,
     errors.StorageError: 502,
 }

@@ -3,13 +3,22 @@
 Views and Celery tasks get their services from here, so neither needs to import infrastructure.
 """
 
+from datetime import timedelta
 from functools import cache
 
 from django.conf import settings
 
+from infrastructure.celery_queue import CeleryTaskQueue
 from infrastructure.credential_vault import EncryptedCredentialVault
+from infrastructure.file_inspector import S3FileInspector
+from infrastructure.job_repository import DjangoJobRepository
+from infrastructure.preview_store import CachePreviewStore
+from infrastructure.result_store import ParquetResultStore
 from infrastructure.s3_storage import S3Storage
+from infrastructure.streaming_engine import StreamingEngine
 from services.connections import ConnectionService
+from services.jobs import JobService
+from services.previews import PreviewService
 
 
 @cache
@@ -21,4 +30,29 @@ def connection_service() -> ConnectionService:
             idle_ttl=settings.CONNECTION_IDLE_TTL,
             max_age=settings.CONNECTION_MAX_AGE,
         ),
+    )
+
+
+@cache
+def job_service() -> JobService:
+    return JobService(
+        connections=connection_service(),
+        jobs=DjangoJobRepository(),
+        queue=CeleryTaskQueue(),
+        engine=StreamingEngine(),
+        results=ParquetResultStore(settings.RESULTS_DIR),
+        max_active_jobs=settings.JOB_MAX_ACTIVE_PER_CONNECTION,
+        max_attempts=settings.JOB_MAX_ATTEMPTS,
+        stale_after=timedelta(seconds=settings.JOB_STALE_AFTER),
+        results_max_age=timedelta(seconds=settings.CONNECTION_MAX_AGE),
+    )
+
+
+@cache
+def preview_service() -> PreviewService:
+    return PreviewService(
+        connections=connection_service(),
+        inspector=S3FileInspector(),
+        store=CachePreviewStore(ttl=settings.CONNECTION_IDLE_TTL),
+        queue=CeleryTaskQueue(),
     )

@@ -7,6 +7,8 @@ x-backend: &backend
   build: ./backend
   volumes:
     - ./backend:/app
+    # Job output. Workers write it and the web process pages through it, so both mount it.
+    - results:/data
   environment:
     DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-only-insecure-key}
     DJANGO_DEBUG: ${DJANGO_DEBUG:-1}
@@ -19,6 +21,7 @@ x-backend: &backend
     POSTGRES_USER: nl2regex
     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nl2regex}
     REDIS_URL: redis://redis:6379
+    RESULTS_DIR: /data/results
   depends_on:
     postgres:
       condition: service_healthy
@@ -78,4 +81,5 @@ services:
 
 volumes:
   pgdata:
+  results:
   frontend_node_modules:

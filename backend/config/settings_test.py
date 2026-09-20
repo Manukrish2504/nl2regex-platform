@@ -10,6 +10,10 @@ os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode(
 
 from .settings import *  # noqa: E402, F403
 
+# ponytail: SQLite for tests, Postgres in compose. The repository uses only portable SQL
+# (single-statement UPDATE ... WHERE), so nothing here depends on the difference.
+DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}}
+
 CACHES = {
     alias: {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": alias}
     for alias in ("default", "vault")

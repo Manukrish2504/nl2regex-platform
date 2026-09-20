@@ -9,3 +9,6 @@ __pycache__/
 node_modules/
 dist/
 .pytest_cache/
+
+# Local job output when running outside Docker
+.results/
