@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { CircleAlert, FileSpreadsheet, FolderOpen, Plug, Regex, Type, X } from 'lucide-react'
+import { CircleAlert, FileSpreadsheet, FolderOpen, Plug, Regex, Sparkles, X } from 'lucide-react'
 
 import { DataTable } from '@/components/data-table'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { PromptInput } from '@/components/ui/prompt-input'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useConfig } from '@/features/config/api'
 import { useConnection } from '@/features/connection/api'
 import { usePreview, type S3File } from '@/features/files/api'
 import { submitJob } from '@/features/jobs/api'
@@ -17,18 +18,31 @@ import { navigate } from '@/lib/router'
 import { fileName, formatFileSize } from '@/lib/utils'
 import { S3Dialog } from './s3-dialog'
 
-// Regex examples while patterns are written by hand. Plain-English suggestions return with the LLM.
-const SUGGESTIONS = [
-  { label: 'Email addresses → REDACTED', pattern: String.raw`[\w.+-]+@[\w-]+\.[\w.]+`, replacement: 'REDACTED' },
-  { label: 'Phone numbers → ***', pattern: String.raw`\+?\d[\d\s().-]{7,}\d`, replacement: '***' },
-  { label: 'Remove URLs', pattern: String.raw`https?://\S+`, replacement: '' },
-]
+type Mode = 'describe' | 'regex'
+
+// A sentence may carry its own replacement ("... and replace them with REDACTED"), so in Describe
+// mode a suggestion fills in the sentence alone and leaves the replacement field empty.
+const SUGGESTIONS: Record<Mode, { label: string; text: string; replacement: string }[]> = {
+  describe: [
+    { label: 'Redact email addresses', text: "Find email addresses and replace them with 'REDACTED'.", replacement: '' },
+    { label: 'Remove phone numbers', text: 'Remove phone numbers', replacement: '' },
+    { label: 'Mask card numbers', text: 'Replace credit card numbers with ****', replacement: '' },
+  ],
+  regex: [
+    { label: 'Email addresses → REDACTED', text: String.raw`[\w.+-]+@[\w-]+\.[\w.]+`, replacement: 'REDACTED' },
+    { label: 'Phone numbers → ***', text: String.raw`\+?\d[\d\s().-]{7,}\d`, replacement: '***' },
+    { label: 'Remove URLs', text: String.raw`https?://\S+`, replacement: '' },
+  ],
+}
 
 /** The landing screen: choose a file, say what to find and what to put in its place, and run it. */
 export function Composer() {
   const queryClient = useQueryClient()
   const { data: connection, isPending } = useConnection()
-  const [pattern, setPattern] = useState('')
+  const { data: config } = useConfig()
+  const [chosenMode, setChosenMode] = useState<Mode>('describe')
+  // One text per mode: a sentence is not a regex, so switching must not carry one into the other.
+  const [texts, setTexts] = useState<Record<Mode, string>>({ describe: '', regex: '' })
   const [replacement, setReplacement] = useState('')
   const [columns, setColumns] = useState<string[]>([])
   const [chosenFile, setChosenFile] = useState<S3File | null>(null)
@@ -38,6 +52,11 @@ export function Composer() {
 
   // A file belongs to a connection. When the connection goes, so does the choice.
   const file = connection ? chosenFile : null
+  // A server started without an API key has no language model, and then only a regex can be run.
+  const describeAvailable = config?.describe_available ?? false
+  const mode: Mode = describeAvailable ? chosenMode : 'regex'
+  const text = texts[mode]
+  const setText = (value: string) => setTexts((current) => ({ ...current, [mode]: value }))
 
   function chooseFile(next: S3File | null) {
     setChosenFile(next)
@@ -49,7 +68,8 @@ export function Composer() {
     setSubmitting(true)
     setError(null)
     try {
-      const job = await submitJob({ file_key: file.key, pattern, replacement, columns })
+      const request = { file_key: file.key, replacement, columns }
+      const job = await submitJob(mode === 'describe' ? { ...request, prompt: text } : { ...request, pattern: text })
       queryClient.setQueryData(['jobs', job.id], job)
       queryClient.invalidateQueries({ queryKey: ['jobs'], exact: true })
       navigate(`/jobs/${job.id}`)
@@ -59,7 +79,7 @@ export function Composer() {
     }
   }
 
-  const canSubmit = Boolean(file) && pattern.trim() !== '' && !submitting
+  const canSubmit = Boolean(file) && text.trim() !== '' && !submitting
 
   return (
     <section className="flex w-full flex-col items-center gap-8">
@@ -78,12 +98,16 @@ export function Composer() {
 
       <div className="flex w-full flex-col gap-3">
         <PromptInput
-          value={pattern}
-          onValueChange={setPattern}
+          value={text}
+          onValueChange={setText}
           onSubmit={handleSubmit}
           canSubmit={canSubmit}
-          placeholder={String.raw`A regular expression, for example [\w.+-]+@[\w-]+\.[\w.]+`}
-          inputClassName="font-mono text-[0.95rem] md:text-[0.95rem]"
+          placeholder={
+            mode === 'describe'
+              ? "Describe what to find, for example: find email addresses in the Email column and replace them with 'REDACTED'"
+              : String.raw`A regular expression, for example [\w.+-]+@[\w-]+\.[\w.]+`
+          }
+          inputClassName={mode === 'regex' ? 'font-mono text-[0.95rem] md:text-[0.95rem]' : undefined}
           attachments={
             file && (
               <div className="flex items-center gap-2 rounded-xl border border-border bg-muted/60 py-1.5 pr-1.5 pl-3 text-sm">
@@ -119,19 +143,31 @@ export function Composer() {
               </Button>
 
               <div className="flex rounded-full border border-border p-0.5" role="group" aria-label="How to give the pattern">
-                <Button variant="secondary" size="xs" className="rounded-full" aria-pressed>
-                  <Regex />
-                  Regex
-                </Button>
                 <Button
-                  variant="ghost"
+                  variant={mode === 'describe' ? 'secondary' : 'ghost'}
                   size="xs"
                   className="rounded-full"
-                  disabled
-                  title="Describing the pattern in plain English arrives with the LLM integration"
+                  aria-pressed={mode === 'describe'}
+                  disabled={!describeAvailable}
+                  title={
+                    describeAvailable
+                      ? 'Say what to find in plain English. Claude writes the pattern.'
+                      : 'This server was started without an ANTHROPIC_API_KEY, so patterns must be typed.'
+                  }
+                  onClick={() => setChosenMode('describe')}
                 >
-                  <Type />
+                  <Sparkles />
                   Describe
+                </Button>
+                <Button
+                  variant={mode === 'regex' ? 'secondary' : 'ghost'}
+                  size="xs"
+                  className="rounded-full"
+                  aria-pressed={mode === 'regex'}
+                  onClick={() => setChosenMode('regex')}
+                >
+                  <Regex />
+                  Regex
                 </Button>
               </div>
 
@@ -143,7 +179,7 @@ export function Composer() {
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' && !event.nativeEvent.isComposing && canSubmit) handleSubmit()
                   }}
-                  placeholder="nothing (removes matches)"
+                  placeholder={mode === 'describe' ? 'from your sentence' : 'nothing (removes matches)'}
                   className="h-7 rounded-full font-mono text-[0.8rem] md:text-[0.8rem]"
                   spellCheck={false}
                 />
@@ -163,23 +199,25 @@ export function Composer() {
               ? 'Connect a bucket and choose a file to begin.'
               : !file
                 ? 'Choose a file to begin.'
-                : 'The replacement is used as literal text. Press Enter to run.'}
+                : mode === 'describe'
+                  ? 'Claude writes the pattern, and it is checked before it runs. Only this sentence is sent, never your data.'
+                  : 'The replacement is used as literal text. Press Enter to run.'}
           </p>
         )}
       </div>
 
       {file ? (
-        <Preview fileKey={file.key} columns={columns} onColumnsChange={setColumns} />
+        <Preview fileKey={file.key} columns={columns} onColumnsChange={setColumns} describing={mode === 'describe'} />
       ) : (
         <div className="flex flex-wrap justify-center gap-2">
-          {SUGGESTIONS.map((suggestion) => (
+          {SUGGESTIONS[mode].map((suggestion) => (
             <Button
               key={suggestion.label}
               variant="outline"
               size="sm"
               className="h-auto rounded-full px-3 py-1.5 text-muted-foreground"
               onClick={() => {
-                setPattern(suggestion.pattern)
+                setText(suggestion.text)
                 setReplacement(suggestion.replacement)
               }}
             >
@@ -205,10 +243,12 @@ interface PreviewProps {
   fileKey: string
   columns: string[]
   onColumnsChange: (columns: string[]) => void
+  /** In Describe mode the sentence itself may name the columns. */
+  describing: boolean
 }
 
 /** The file's first rows. Its column headers double as the column picker. */
-function Preview({ fileKey, columns, onColumnsChange }: PreviewProps) {
+function Preview({ fileKey, columns, onColumnsChange, describing }: PreviewProps) {
   const preview = usePreview(fileKey)
 
   if (preview.isError || preview.data?.status === 'failed') {
@@ -243,6 +283,8 @@ function Preview({ fileKey, columns, onColumnsChange }: PreviewProps) {
               Use every column
             </button>
           </>
+        ) : describing ? (
+          'Applies to the columns your sentence names, or to every column if it names none. Click column headers to choose them yourself.'
         ) : (
           'Applies to every column. Click column headers to choose specific ones.'
         )}
