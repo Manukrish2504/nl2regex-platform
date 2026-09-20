@@ -1,14 +1,9 @@
 """What is particular to the Spark engine. Behaviour every engine shares is in test_engines.py."""
 
-import csv
-import importlib.util
-import io
 import logging
-from pathlib import Path
 
 import pytest
-from fakes import run_replace
-from test_engines import EMAIL, job_for
+from fakes import EMAIL, SAMPLE_HEADER, csv_bytes, job_for, run_replace, sample_rows
 
 from domain import errors
 from domain.connections import Connection, S3Credentials
@@ -18,7 +13,6 @@ from infrastructure.streaming_engine import StreamingEngine
 
 spark_engine = pytest.importorskip("infrastructure.spark_engine")
 
-HEADER = ["id", "name", "email", "phone", "country", "signup_date", "notes"]
 UNSPLIT = "unsplit (cells contain line breaks)"
 
 
@@ -28,21 +22,6 @@ def spark(tmp_path, bucket_mirror=None):
         staging_dir=tmp_path / "staging",
         source_root=bucket_mirror.as_uri() if bucket_mirror else None,
     )
-
-
-def _sample_rows(count):
-    """The messy customer data the demo uses, from scripts/make_sample_data.py."""
-    script = Path(__file__).parents[2] / "scripts" / "make_sample_data.py"
-    spec = importlib.util.spec_from_file_location("make_sample_data", script)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return list(module.rows(count))
-
-
-def _csv(rows, header=HEADER) -> bytes:
-    text = io.StringIO()
-    csv.writer(text, lineterminator="\n").writerows([header, *rows])
-    return text.getvalue().encode()
 
 
 @pytest.fixture
@@ -83,20 +62,20 @@ pytestmark = pytest.mark.spark
     ],
 )
 def test_spark_and_the_reference_engine_agree_on_messy_data(both, put_object, pattern, columns):
-    rows = _sample_rows(3000) + [[9001, "Zoë Müller", "ZOË@BÜCHER.DE", "", "DE", "", " padded "]]
-    key = put_object("customers.csv", _csv(rows))
+    rows = sample_rows(3000) + [[9001, "Zoë Müller", "ZOË@BÜCHER.DE", "", "DE", "", " padded "]]
+    key = put_object("customers.csv", csv_bytes(rows))
 
     (reference, spark), _ = both(job_for(key, pattern=pattern, columns=columns))
 
     assert spark[2] == reference[2]  # every row, in the same order
-    assert spark[1] == reference[1] == HEADER
+    assert spark[1] == reference[1] == SAMPLE_HEADER
     assert spark[0] == reference[0]  # rows_total and rows_changed
     assert reference[0].rows_changed > 0  # the pattern really did something
 
 
 def test_a_file_read_as_many_splits_keeps_its_row_order(both, put_object, monkeypatch, tmp_path):
     monkeypatch.setattr(spark_engine, "PARTITION_BYTES", 64 * 1024)
-    key = put_object("customers.csv", _csv(_sample_rows(8000)))
+    key = put_object("customers.csv", csv_bytes(sample_rows(8000)))
 
     (reference, spark), _ = both(job_for(key, columns=["email"]))
 
@@ -159,7 +138,7 @@ def test_a_pattern_java_rejects_fails_with_a_clear_message(
 
 def test_column_names_need_no_quoting(both, put_object):
     names = ["First Name", "e.mail", "naïve `col`", "a,b"]
-    key = put_object("c.csv", _csv([["Zoë", "z@x.com", "1", "2"]], header=names))
+    key = put_object("c.csv", csv_bytes([["Zoë", "z@x.com", "1", "2"]], header=names))
 
     (reference, spark), _ = both(job_for(key, columns=["e.mail"]))
 
@@ -180,7 +159,7 @@ def test_a_key_hadoop_cannot_parse_is_refused_before_spark_starts(connection, pu
 
 
 def test_cancel_stops_the_spark_job(spark_session, connection, put_object, bucket_mirror, tmp_path):
-    key = put_object("customers.csv", _csv(_sample_rows(20_000)))
+    key = put_object("customers.csv", csv_bytes(sample_rows(20_000)))
     checks = []
 
     def cancel_once_spark_is_running():
@@ -254,7 +233,7 @@ def test_both_engines_agree_on_several_operations_and_on_a_mapping(
     from domain.operations import MapValues, MaskCells, Replace
     from services.pii import PATTERNS
 
-    key = put_object("customers.csv", _csv(_sample_rows(3000)))
+    key = put_object("customers.csv", csv_bytes(sample_rows(3000)))
     operations = [
         Replace(PATTERNS["email"][1], "[EMAIL]", ["email", "notes"]),
         Replace(PATTERNS["phone"][1], "[PHONE]", ["phone", "notes"]),

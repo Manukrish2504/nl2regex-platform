@@ -71,6 +71,7 @@ def pattern_service() -> PatternService:
     return PatternService(
         writer=writer,
         cache=CachePatternStore(
+            kind="pattern",
             namespace=f"{settings.LLM_MODEL}:v{INSTRUCTIONS_VERSION}",
             ttl=settings.PATTERN_CACHE_TTL,
         ),
@@ -78,34 +79,34 @@ def pattern_service() -> PatternService:
     )
 
 
-def _data_advisers():
-    """The adapters that ask a language model about a file, and the cache in front of them."""
+def _advice_cache():
     from infrastructure import claude_data_advisers as advisers
-    from infrastructure.pattern_cache import CacheAdviceStore
+    from infrastructure.pattern_cache import CacheStore
 
-    cache_store = CacheAdviceStore(
+    return CacheStore(
+        kind="advice",
         namespace=f"{settings.LLM_MODEL}:v{advisers.INSTRUCTIONS_VERSION}",
         ttl=settings.PATTERN_CACHE_TTL,
     )
-    # Without an API key these are never reached: submitting such a job is refused first.
-    credentials = (settings.ANTHROPIC_API_KEY, settings.LLM_MODEL, settings.LLM_TIMEOUT)
-    return (
-        advisers.ClaudePiiClassifier(*credentials),
-        advisers.ClaudeValueStandardiser(*credentials),
-        cache_store,
-    )
+
+
+def _claude_arguments():
+    """Without an API key these adapters are never reached: such a job is refused at submit."""
+    return settings.ANTHROPIC_API_KEY, settings.LLM_MODEL, settings.LLM_TIMEOUT
 
 
 @cache
 def pii_service() -> PiiService:
-    classifier, _, cache_store = _data_advisers()
-    return PiiService(classifier, cache_store, pattern_service())
+    from infrastructure.claude_data_advisers import ClaudePiiClassifier
+
+    return PiiService(ClaudePiiClassifier(*_claude_arguments()), _advice_cache(), pattern_service())
 
 
 @cache
 def standardise_service() -> StandardiseService:
-    _, standardiser, cache_store = _data_advisers()
-    return StandardiseService(standardiser, cache_store)
+    from infrastructure.claude_data_advisers import ClaudeValueStandardiser
+
+    return StandardiseService(ClaudeValueStandardiser(*_claude_arguments()), _advice_cache())
 
 
 @cache

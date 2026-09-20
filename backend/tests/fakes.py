@@ -229,3 +229,50 @@ def run_replace(
     """Run a job's single find-and-replace through an engine, the way the job service does."""
     with engine.open(job, connection, on_progress, should_cancel) as opened:
         return opened.rewrite([job.as_replace()], destination, on_progress)
+
+
+# --- building the data a test runs on -----------------------------------------------------
+
+EMAIL = r"[\w.+-]+@[\w-]+\.[\w.]+"
+SAMPLE_HEADER = ["id", "name", "email", "phone", "country", "signup_date", "notes"]
+
+
+def job_for(key, pattern=EMAIL, replacement="REDACTED", columns=(), **overrides):
+    """A job for one file, with the find-and-replace most tests use."""
+    from datetime import UTC, datetime
+
+    from domain.connections import FileFormat
+    from domain.jobs import Job
+
+    return Job(
+        id="job",
+        connection_id="a" * 64,
+        file_key=key,
+        file_format=FileFormat.from_key(key),
+        pattern=pattern,
+        replacement=replacement,
+        columns=list(columns),
+        created_at=datetime(2026, 9, 20, tzinfo=UTC),
+        **overrides,
+    )
+
+
+def sample_rows(count):
+    """The messy customer data the demo uses, from scripts/make_sample_data.py."""
+    import importlib.util
+    from pathlib import Path as _Path
+
+    script = _Path(__file__).parents[2] / "scripts" / "make_sample_data.py"
+    spec = importlib.util.spec_from_file_location("make_sample_data", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return list(module.rows(count))
+
+
+def csv_bytes(rows, header=SAMPLE_HEADER):
+    import csv
+    import io
+
+    text = io.StringIO()
+    csv.writer(text, lineterminator="\n").writerows([header, *rows])
+    return text.getvalue().encode()

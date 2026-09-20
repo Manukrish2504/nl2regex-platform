@@ -1,42 +1,38 @@
 import hashlib
-from dataclasses import asdict
 
 from django.core.cache import cache
 
 from domain.patterns import PatternSuggestion
 
 
-class CachePatternStore:
-    """Verified patterns live in the Django cache (Redis), keyed by the request they answer.
+class CacheStore:
+    """Answers from a language model, kept in the Django cache (Redis).
 
     The namespace names the model and the version of the instructions it was given. A change to
     either could change the answer, so it starts a fresh set of keys and never serves an old one.
     """
 
-    def __init__(self, namespace: str, ttl: int):
-        self._namespace = namespace
-        self._ttl = ttl
-
-    def get(self, request: str) -> PatternSuggestion | None:
-        entry = cache.get(self._key(request))
-        return PatternSuggestion(**entry) if entry else None
-
-    def put(self, request: str, suggestion: PatternSuggestion) -> None:
-        cache.set(self._key(request), asdict(suggestion), self._ttl)
-
-    def _key(self, request: str) -> str:
-        return f"pattern:{self._namespace}:{hashlib.sha256(request.encode()).hexdigest()}"
-
-
-class CacheAdviceStore:
-    """The same, for the answers about a file. The key is a hash of exactly what was sent."""
-
-    def __init__(self, namespace: str, ttl: int):
-        self._namespace = namespace
+    def __init__(self, kind: str, namespace: str, ttl: int):
+        self._prefix = f"{kind}:{namespace}"
         self._ttl = ttl
 
     def get(self, key: str) -> dict | None:
-        return cache.get(f"advice:{self._namespace}:{key}")
+        return cache.get(f"{self._prefix}:{key}")
 
-    def put(self, key: str, advice: dict) -> None:
-        cache.set(f"advice:{self._namespace}:{key}", advice, self._ttl)
+    def put(self, key: str, value: dict) -> None:
+        cache.set(f"{self._prefix}:{key}", value, self._ttl)
+
+
+class CachePatternStore(CacheStore):
+    """The same, keyed by the request a pattern answers, holding the suggestion itself."""
+
+    def get(self, request: str) -> PatternSuggestion | None:
+        entry = super().get(_digest(request))
+        return PatternSuggestion(**entry) if entry else None
+
+    def put(self, request: str, suggestion: PatternSuggestion) -> None:
+        super().put(_digest(request), vars(suggestion))
+
+
+def _digest(request: str) -> str:
+    return hashlib.sha256(request.encode()).hexdigest()
