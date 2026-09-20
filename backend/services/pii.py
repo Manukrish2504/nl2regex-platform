@@ -8,6 +8,7 @@ patterns for those kinds are ours, tested and run through the same safety probe 
 import hashlib
 import json
 import logging
+import re
 from collections import Counter
 from dataclasses import asdict
 
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 SAMPLE_ROWS = 500
 SHAPES_PER_COLUMN = 5
+TOKEN_SHAPES_PER_COLUMN = 8
 _SHAPE_LENGTH = 80
 
 # Kinds that a pattern can find, also inside free text. Each pattern is linear-time, matches the
@@ -47,6 +49,7 @@ WHOLE_CELL = {
     "identifier": "[ID]",
 }
 OTHER_PLACEHOLDER = "[REDACTED]"
+_RUNS = re.compile(r"([aA9])\1+")
 
 
 def shape_of(value: str) -> str:
@@ -67,10 +70,39 @@ def profile(columns: list[str], rows: list[Row], wanted: list[str]) -> list[Colu
     for index in column_indexes(columns, wanted):
         cells = [row[index] for row in rows]
         filled = [cell for cell in cells if cell]
-        shapes = Counter(shape_of(cell) for cell in filled).most_common(SHAPES_PER_COLUMN)
-        blank_share = round(1 - len(filled) / len(cells), 2) if cells else 1.0
-        profiles.append(ColumnProfile(columns[index], blank_share, [shape for shape, _ in shapes]))
+        # A plain word says nothing. A token with a digit or a symbol in it may be an address,
+        # a number or a link, wherever in the sentence it sits.
+        tokens = [
+            token
+            for cell in filled
+            for token in cell.split()
+            if not token.strip(".,;:!?()\"'").isalpha()
+        ]
+        profiles.append(
+            ColumnProfile(
+                column=columns[index],
+                blank_share=round(1 - len(filled) / len(cells), 2) if cells else 1.0,
+                shapes=_common_shapes(filled, SHAPES_PER_COLUMN),
+                token_shapes=_common_shapes(tokens, TOKEN_SHAPES_PER_COLUMN),
+            )
+        )
     return profiles
+
+
+def _common_shapes(values: list[str], limit: int) -> list[str]:
+    """One shape for each of the most common KINDS of value.
+
+    "aaaa99@aaaa.aaa" and "aaaaaaa9@aa.aa" are the same kind of thing at different lengths.
+    Counted separately, a column's e-mail addresses alone would fill every place and hide the
+    phone numbers beside them. So shapes are grouped by their outline, with runs collapsed, and
+    each of the most common groups is shown by its most common member.
+    """
+    groups: dict[str, Counter[str]] = {}
+    for value in values:
+        shape = shape_of(value)
+        groups.setdefault(_RUNS.sub(r"\1", shape), Counter())[shape] += 1
+    ranked = sorted(groups.values(), key=lambda group: -group.total())
+    return [group.most_common(1)[0][0] for group in ranked[:limit]]
 
 
 class PiiService:

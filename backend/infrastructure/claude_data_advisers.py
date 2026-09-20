@@ -13,7 +13,9 @@ from infrastructure import claude_api
 # Part of the cache key. Raise it whenever the instructions below change what Claude would answer.
 INSTRUCTIONS_VERSION = 1
 
-PII_INSTRUCTIONS = """You are shown the columns of a data file: each column's name, how much of it is blank, and the SHAPES of its most common values. A shape is the value with every letter replaced by a (A for a capital) and every digit by 9. Punctuation, spaces and length are unchanged, so "aaaa.aaa@aaaaaaa.aaa" is an e-mail address and "+9 (999) 999-9999" is a phone number. You never see a real value.
+PII_INSTRUCTIONS = """You are shown the columns of a data file: each column's name, how much of it is blank, and SHAPES taken from a sample of its values. A shape is a value with every letter replaced by a (A for a capital) and every digit by 9. Punctuation, spaces and length are unchanged, so "aaaa.aaa@aaaaaaa.aaa" is an e-mail address and "+9 (999) 999-9999" is a phone number. You never see a real value.
+
+shapes are those of whole values, most common first. token_shapes are those of the words inside the values that are not plain words, most common first. In a free-text column every value has its own shape, so what is buried in it shows only in token_shapes: "aaaa99@aaaa.aa" there means that some values contain an e-mail address.
 
 Say which columns contain personal data, and of what kind. Give one finding per column and kind. A free-text column can have several, for example notes that contain e-mail addresses and phone numbers.
 

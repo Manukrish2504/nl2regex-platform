@@ -17,8 +17,10 @@ from fakes import (
 )
 
 from domain import errors
+from domain.advice import Finding
 from domain.connections import S3Credentials
 from domain.jobs import JobCancelled, JobStatus, RetryLater, TransformResult
+from domain.operations import MapValues, MaskCells
 from domain.patterns import PatternSuggestion
 from services.connections import ConnectionService
 from services.jobs import JobService
@@ -510,3 +512,80 @@ def test_a_prompt_is_refused_at_once_when_no_language_model_is_configured():
     with pytest.raises(errors.LLMNotConfigured):
         world.submit(**REQUEST)
     assert world.queue.jobs == []
+
+
+# --- the two transformations a language model plans -------------------------------------------
+
+PEOPLE = [["1", "John Doe", "USA"], ["2", "Jane Smith", "us"]]
+
+
+def test_redacting_personal_data_plans_from_a_sample_and_reports_what_it_did():
+    engine = FakeEngine(
+        columns=["id", "name", "country"],
+        rows=PEOPLE,
+        result=TransformResult(rows_total=2, rows_changed=2, changed_by_operation=[2]),
+    )
+    world = World(engine=engine, classifier=FakeClassifier([Finding("name", "name", "names")]))
+    job = world.submit(kind="redact_pii", pattern="", replacement="", columns=[])
+    seen = {}
+    engine.during = lambda running, _cancel: seen.update(report=world.jobs.get(running.id).report)
+    world.service.run(job.id)
+
+    assert engine.operations == [MaskCells("[NAME]", ["name"])]
+    # The model saw shapes of the sampled rows, not the rows.
+    assert world.classifier.calls[0][1].shapes == ["Aaaa Aaa"]
+    assert seen["report"]["findings"][0]["column"] == "name"  # on the page while Spark works
+    done = world.jobs.get(job.id)
+    assert done.status is JobStatus.SUCCESS
+    assert done.report["operations"] == [
+        {"kind": "name", "placeholder": "[NAME]", "columns": ["name"], "rows_changed": 2}
+    ]
+
+
+def test_standardising_counts_the_values_first_and_then_maps_them():
+    engine = FakeEngine(
+        columns=["id", "name", "country"],
+        counts=[("USA", 40), ("us", 30), (None, 5)],
+        result=TransformResult(rows_total=75, rows_changed=30, changed_by_operation=[30]),
+    )
+    world = World(engine=engine, standardiser=FakeStandardiser([("us", "USA")]))
+    job = world.submit(
+        kind="standardise", pattern="", replacement="", columns=["country"], prompt="prefer USA"
+    )
+    world.service.run(job.id)
+
+    assert world.standardiser.calls == [("country", ["USA", "us"], "prefer USA")]
+    assert engine.operations == [MapValues("country", {"us": "USA"})]
+    done = world.jobs.get(job.id)
+    assert (done.status, done.rows_changed) == (JobStatus.SUCCESS, 30)
+    assert done.report["mapping"] == [{"from": "us", "to": "USA", "rows": 30}]
+
+
+def test_a_column_with_too_many_values_fails_the_job_before_the_model_is_asked():
+    engine = FakeEngine(columns=["email"], counts=[(f"user{n}@x.com", 1) for n in range(400)])
+    world = World(engine=engine)
+    job = world.submit(kind="standardise", pattern="", replacement="", columns=["email"])
+    world.service.run(job.id)
+
+    failed = world.jobs.get(job.id)
+    assert (failed.status, failed.error_code) == (JobStatus.FAILED, "not_categorical")
+    assert world.standardiser.calls == [] and engine.runs == 0
+
+
+def test_nothing_to_redact_ends_the_job_with_a_plain_message():
+    world = World(engine=FakeEngine(rows=[["1", "a@x.com"]]), classifier=FakeClassifier([]))
+    job = world.submit(kind="redact_pii", pattern="", replacement="", columns=[])
+    world.service.run(job.id)
+
+    failed = world.jobs.get(job.id)
+    assert failed.error_code == "nothing_to_change"
+    assert "No personal data was found" in failed.error_message
+
+
+def test_these_kinds_need_a_language_model():
+    writer = FakeWriter()
+    writer.is_configured = False
+    world = World(writer=writer)
+    for kind, columns in (("redact_pii", []), ("standardise", ["country"])):
+        with pytest.raises(errors.LLMNotConfigured):
+            world.submit(kind=kind, pattern="", replacement="", columns=columns)

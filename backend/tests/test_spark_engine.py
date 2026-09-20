@@ -246,3 +246,55 @@ def test_an_unknown_java_failure_is_left_alone():
 def test_loggers_that_would_print_keys_at_debug_are_pinned():
     for name in ("boto3", "botocore", "urllib3", "py4j"):
         assert logging.getLogger(name).getEffectiveLevel() >= logging.WARNING
+
+
+def test_both_engines_agree_on_several_operations_and_on_a_mapping(
+    spark_session, connection, put_object, bucket_mirror, tmp_path
+):
+    from domain.operations import MapValues, MaskCells, Replace
+    from services.pii import PATTERNS
+
+    key = put_object("customers.csv", _csv(_sample_rows(3000)))
+    operations = [
+        Replace(PATTERNS["email"][1], "[EMAIL]", ["email", "notes"]),
+        Replace(PATTERNS["phone"][1], "[PHONE]", ["phone", "notes"]),
+        MaskCells("[NAME]", ["name"]),
+        MapValues("country", {"USA": "United States", "us": "United States", "AUS": "Australia"}),
+    ]
+    outcomes = {}
+    for name, engine in {
+        "reference": StreamingEngine(),
+        "spark": spark(tmp_path, bucket_mirror),
+    }.items():
+        store = ParquetResultStore(tmp_path / name)
+        with engine.open(job_for(key), connection, lambda *_: None, lambda: False) as file:
+            counts = file.distinct_values("country", 50, lambda *_: None)
+            result = file.rewrite(operations, store.path_for("job"), lambda *_: None)
+        outcomes[name] = (counts, result, store.read_rows("job", 0, 5000)[1])
+
+    assert outcomes["spark"] == outcomes["reference"]
+    counts, result, rows = outcomes["spark"]
+    assert all(changed > 0 for changed in result.changed_by_operation)
+    assert not any("@" in (row[2] or "") for row in rows)  # no e-mail address survived
+
+
+def _recorder(stages):
+    return lambda _fraction, stage: stages.append(stage)
+
+
+def test_counting_values_notices_cells_split_over_lines(
+    spark_session, connection, put_object, bucket_mirror, tmp_path
+):
+    body = b'id,notes,country\n1,"line one\nline two",USA\n2,plain,us\n3,"a\nb",USA\n'
+    key = put_object("c.csv", body)
+    seen = {}
+    for name, engine in {
+        "reference": StreamingEngine(),
+        "spark": spark(tmp_path, bucket_mirror),
+    }.items():
+        stages = seen[name + " stages"] = []
+        with engine.open(job_for(key), connection, lambda *_: None, lambda: False) as file:
+            seen[name] = file.distinct_values("country", 10, _recorder(stages))
+
+    assert seen["spark"] == seen["reference"] == [("USA", 2), ("us", 1)]
+    assert any(UNSPLIT in stage for stage in seen["spark stages"])

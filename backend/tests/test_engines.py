@@ -11,6 +11,7 @@ from openpyxl import Workbook
 from domain import errors
 from domain.connections import FileFormat
 from domain.jobs import Job, JobCancelled
+from domain.operations import MapValues, MaskCells, Replace
 from infrastructure import streaming_engine
 from infrastructure.result_store import ParquetResultStore
 from infrastructure.streaming_engine import StreamingEngine
@@ -256,3 +257,87 @@ def test_an_oversized_excel_file_is_refused_before_downloading(run, put_object, 
 def test_a_corrupt_excel_file_is_reported(run, put_object):
     with pytest.raises(errors.FileUnreadable):
         run(job_for(put_object("book.xlsx", b"this is not a zip archive")))
+
+
+# --- more than one operation, and the other kinds of operation -------------------------------
+
+MESSY = (
+    b"id,name,email,country,notes\n"
+    b"1,John Doe,john@x.com,USA,write to j.doe@y.org\n"
+    b"2,Jane Smith,,us,nothing here\n"
+    b"3,Zoe Brown,zoe@z.io,Germany,\n"
+    b"4,,n/a,Atlantis,call me\n"
+)
+
+
+@pytest.fixture
+def opened(engine, connection, put_object):
+    """Open MESSY with the engine under test: opened(operations...) -> (result, rows)."""
+    key = put_object("messy.csv", MESSY)
+
+    def rewrite(*operations, tmp=None):
+        store = ParquetResultStore(tmp)
+        with engine.open(job_for(key), connection, lambda *_: None, lambda: False) as file:
+            result = file.rewrite(list(operations), store.path_for("job"), lambda *_: None)
+        return result, store.read_rows("job", 0, 100)[1]
+
+    return rewrite
+
+
+def test_operations_are_applied_in_order_and_counted_one_by_one(opened, tmp_path):
+    result, rows = opened(
+        Replace(EMAIL, "[EMAIL]", ["email", "notes"]),
+        MaskCells("[NAME]", ["name"]),
+        tmp=tmp_path / "out",
+    )
+    assert rows == [
+        ["1", "[NAME]", "[EMAIL]", "USA", "write to [EMAIL]"],
+        ["2", "[NAME]", None, "us", "nothing here"],
+        ["3", "[NAME]", "[EMAIL]", "Germany", None],
+        ["4", None, "n/a", "Atlantis", "call me"],  # a blank cell is never masked
+    ]
+    assert (result.rows_total, result.rows_changed) == (4, 3)
+    assert result.changed_by_operation == [2, 3]  # rows each operation changed
+
+
+def test_a_mapping_changes_the_values_it_names_and_leaves_the_rest(opened, tmp_path):
+    mapping = {"USA": "United States", "us": "United States"}
+    result, rows = opened(MapValues("country", mapping), tmp=tmp_path / "out")
+
+    assert [row[3] for row in rows] == ["United States", "United States", "Germany", "Atlantis"]
+    assert [row[0] for row in rows] == ["1", "2", "3", "4"]  # the join kept the rows in order
+    assert result.changed_by_operation == [2]
+
+
+def test_a_later_operation_sees_what_an_earlier_one_wrote(opened, tmp_path):
+    _, rows = opened(
+        Replace("USA|us", "US", ["country"]),
+        MapValues("country", {"US": "United States"}),
+        tmp=tmp_path / "out",
+    )
+    assert [row[3] for row in rows] == ["United States", "United States", "Germany", "Atlantis"]
+
+
+def test_distinct_values_come_with_counts_most_frequent_first(engine, connection, put_object):
+    body = b"id,country\n" + b"".join(
+        f"{n},{value}\n".encode()
+        for n, value in enumerate(["us"] * 5 + ["USA"] * 3 + [""] * 3 + ["UK"])
+    )
+    key = put_object("c.csv", body)
+    with engine.open(job_for(key), connection, lambda *_: None, lambda: False) as file:
+        assert file.columns == ["id", "country"]
+        counts = file.distinct_values("Country", 10, lambda *_: None)  # found whatever its case
+        limited = file.distinct_values("country", 2, lambda *_: None)
+
+    assert counts == [("us", 5), (None, 3), ("USA", 3), ("UK", 1)]  # ties: blank, then by value
+    assert limited == counts[:2]
+
+
+def test_the_first_rows_can_be_sampled_without_a_pass_over_the_file(engine, connection, put_object):
+    key = put_object("messy.csv", MESSY)
+    with engine.open(job_for(key), connection, lambda *_: None, lambda: False) as file:
+        sample = file.sample(2)
+    assert sample == [
+        ["1", "John Doe", "john@x.com", "USA", "write to j.doe@y.org"],
+        ["2", "Jane Smith", None, "us", "nothing here"],
+    ]

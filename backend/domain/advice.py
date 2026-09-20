@@ -12,6 +12,10 @@ class ColumnProfile:
     column: str
     blank_share: float  # 0 to 1, of the sampled rows
     shapes: list[str]  # the most common shapes of its values, most common first
+    # The most common shapes of the words inside its values that are not plain words. In free
+    # text every value has a shape of its own, so an e-mail address buried in a sentence never
+    # shows in `shapes`; here it does, as "aaaa99@aaaa.aa".
+    token_shapes: list[str]
 
 
 @dataclass(frozen=True)
