@@ -3,6 +3,8 @@ Docs/Task/
 
 .DS_Store
 .env
+# Local AWS keys for testing against a real bucket. Never commit these.
+s3.json
 .venv/
 __pycache__/
 *.pyc
