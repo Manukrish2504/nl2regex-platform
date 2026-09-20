@@ -11,7 +11,7 @@ import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useConnection } from '@/features/connection/api'
 import { ApiError } from '@/lib/api'
-import { fileName } from '@/lib/utils'
+import { fileName, resolveColumns } from '@/lib/utils'
 import { cancelJob, isActive, useJob, useJobRows, type Job } from './api'
 import { StatusBadge } from './status'
 
@@ -59,6 +59,9 @@ function JobView({ job }: { job: Job }) {
   }
 
   const stopping = cancelling || job.cancel_requested
+  // Until the pattern is written, an empty replacement or column list is not final: the sentence
+  // may state them ("... in the Email column ... with 'REDACTED'"), and they arrive with the pattern.
+  const awaitingSentence = Boolean(job.prompt) && !job.pattern && isActive(job)
 
   return (
     <div className="flex w-full flex-col gap-6">
@@ -76,16 +79,45 @@ function JobView({ job }: { job: Job }) {
           </Button>
         </div>
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+          {job.prompt && (
+            <>
+              <dt className="text-muted-foreground">Asked</dt>
+              <dd className="min-w-0 break-words">“{job.prompt}”</dd>
+            </>
+          )}
           <dt className="text-muted-foreground">Find</dt>
-          <dd className="min-w-0">
-            <code className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.8rem] break-all">{job.pattern}</code>
+          <dd className="flex min-w-0 flex-col gap-1">
+            {job.pattern ? (
+              <span className="flex flex-wrap items-center gap-2">
+                <code className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.8rem] break-all">{job.pattern}</code>
+                {job.pattern_source !== 'user' && (
+                  <Badge
+                    variant="outline"
+                    title={
+                      job.pattern_source === 'cache'
+                        ? 'The same request was answered before, so no language model was called this time.'
+                        : 'Written by Claude from your sentence, then checked before it ran.'
+                    }
+                  >
+                    {job.pattern_source === 'cache' ? 'from cache' : 'written by Claude'}
+                  </Badge>
+                )}
+              </span>
+            ) : isActive(job) ? (
+              <Skeleton className="h-5 w-64" aria-label="The pattern is being written" />
+            ) : (
+              <span className="text-muted-foreground">no pattern was written</span>
+            )}
+            {job.explanation && <span className="text-xs text-muted-foreground">{job.explanation}</span>}
           </dd>
           <dt className="text-muted-foreground">Replace with</dt>
           <dd className="min-w-0">
             {job.replacement ? (
               <code className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.8rem] break-all">{job.replacement}</code>
             ) : (
-              <span className="text-muted-foreground">nothing (matches are removed)</span>
+              <span className="text-muted-foreground">
+                {awaitingSentence ? 'being read from your sentence' : 'nothing (matches are removed)'}
+              </span>
             )}
           </dd>
           <dt className="text-muted-foreground">In</dt>
@@ -96,6 +128,8 @@ function JobView({ job }: { job: Job }) {
                   {column}
                 </Badge>
               ))
+            ) : awaitingSentence ? (
+              <span className="text-muted-foreground">being read from your sentence</span>
             ) : (
               <span>every column</span>
             )}
@@ -171,7 +205,7 @@ function Results({ job }: { job: Job }) {
         <DataTable
           columns={rows.data.columns}
           rows={rows.data.rows}
-          highlighted={job.columns.length ? job.columns : rows.data.columns}
+          highlighted={job.columns.length ? resolveColumns(job.columns, rows.data.columns) : rows.data.columns}
           firstRowNumber={(rows.data.page - 1) * rows.data.page_size + 1}
           className={rows.isPlaceholderData ? 'opacity-60 transition-opacity' : undefined}
         />

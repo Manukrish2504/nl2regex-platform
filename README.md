@@ -6,7 +6,7 @@ asynchronously via Celery.
 
 **Stack:** Django + DRF · React (Vite, TypeScript) · Celery · Redis · PySpark · Postgres
 
-![The composer with a file chosen from S3](assets/screenshots/composer.png)
+![The composer: a file chosen from S3, and the brief's own sentence as the request](assets/screenshots/composer.png)
 
 > Work in progress. So far, end to end: connect your S3 bucket, choose a file, preview it, describe
 > what to find in plain English (or type a regex), and an asynchronous job has Claude write and
@@ -289,7 +289,7 @@ dark theme driven by one set of CSS variables in `src/index.css`.
 ```
 src/components/ui/   shadcn primitives, plus prompt-input.tsx (the composer)
 src/components/      the app shell
-src/features/        connection/, files/ and composer/: each owns its API calls and screens
+src/features/        connection/, files/, composer/, jobs/ and config/: each owns its API calls and screens
 src/lib/             the fetch wrapper (typed ApiError) and small helpers
 ```
 
@@ -297,6 +297,14 @@ src/lib/             the fetch wrapper (typed ApiError) and small helpers
   bucket*, then *Choose file*, then the chosen file sits in the composer as a chip and a worker
   reads its first rows. The preview's column headers are the column picker: click to target a
   column, or leave them all unselected to apply the pattern everywhere.
+- **Describe, or Regex.** The composer opens in Describe mode, where the request is a sentence,
+  and says under the box that only the sentence is sent, never the data. Regex mode takes a
+  typed pattern. Each mode keeps its own text, because a sentence is not a regex. On a server
+  without an API key, Describe is disabled and says why.
+- **The job page shows its work:** what was asked, the pattern Claude wrote with a *written by
+  Claude* or *from cache* badge, and a one-line explanation of what it matches. While the pattern
+  is being written that row is a skeleton, and the replacement and columns read "being read from
+  your sentence", since the sentence may state them.
 - **A job page per job**, at `/jobs/:id`, so a refresh keeps your place and the sidebar's items are
   real links. It polls every second while the job is queued or running and stops when it ends.
   Routing is the browser's History API; two routes do not need a library.
@@ -308,9 +316,11 @@ src/lib/             the fetch wrapper (typed ApiError) and small helpers
   read once with `FormData` on submit and then reset. The submit is a plain async function rather
   than a TanStack mutation, because mutations keep their variables in a cache for minutes.
 
-| A job running | Its results |
+| Claude writing the pattern | The results |
 |---|---|
-| ![Live progress with a cancel button](assets/screenshots/job-running.png) | ![Paginated results with the target columns tinted](assets/screenshots/job-results.png) |
+| ![The job page while the pattern is written: the sentence, a skeleton, and a cancel button](assets/screenshots/job-writing.png) | ![The sentence, the pattern with its source and explanation, and the paginated result with the target column tinted](assets/screenshots/job-results.png) |
+
+![Live progress on a larger file, with a cancel button](assets/screenshots/job-running.png)
 
 ![Browsing a bucket; files the app cannot process are shown but disabled](assets/screenshots/file-browser.png)
 

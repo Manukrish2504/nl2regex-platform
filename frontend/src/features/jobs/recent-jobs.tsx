@@ -34,7 +34,9 @@ export function RecentJobs() {
             <StatusDot status={job.status} />
             <span className="min-w-0 flex-1">
               <span className="block truncate">{fileName(job.file_key)}</span>
-              <span className="block truncate font-mono text-xs text-muted-foreground">{job.pattern}</span>
+              <span className={cn('block truncate text-xs text-muted-foreground', !job.prompt && 'font-mono')}>
+                {job.prompt ?? job.pattern}
+              </span>
             </span>
             {job.status === 'RUNNING' && (
               <span className="text-xs text-muted-foreground tabular-nums">{job.progress}%</span>

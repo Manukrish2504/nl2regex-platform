@@ -13,7 +13,12 @@ export type Job = {
   cancel_requested: boolean
   file_key: string
   file_format: 'csv' | 'excel'
+  /** The plain-English request, when the pattern was not typed. */
+  prompt: string | null
+  /** Empty while a worker is still writing it from the prompt. */
   pattern: string
+  pattern_source: 'user' | 'llm' | 'cache'
+  explanation: string | null
   replacement: string
   columns: string[]
   error: { code: string; message: string } | null
@@ -25,7 +30,8 @@ export type Job = {
   finished_at: string | null
 }
 
-export type JobRequest = Pick<Job, 'file_key' | 'pattern' | 'replacement' | 'columns'>
+export type JobRequest = Pick<Job, 'file_key' | 'replacement' | 'columns'> &
+  ({ pattern: string } | { prompt: string })
 
 export type Page = {
   columns: string[]
