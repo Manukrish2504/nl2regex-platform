@@ -15,6 +15,8 @@ from domain.errors import (
     InvalidPattern,
     JobNotFinished,
     JobNotFound,
+    LLMNotConfigured,
+    LLMUnavailable,
     ResultsExpired,
     StorageUnreachable,
     TooManyActiveJobs,
@@ -24,11 +26,12 @@ from domain.jobs import Job, JobCancelled, JobStatus, RetryLater
 from domain.ports import JobRepository, ResultStore, TaskQueue, TransformEngine
 from domain.tables import Page
 from services.connections import ConnectionService
+from services.patterns import PatternService
 
 logger = logging.getLogger(__name__)
 
 # Failures worth trying again. Everything else (bad credentials, a missing column) fails at once.
-TRANSIENT_ERRORS = (StorageUnreachable, EngineUnavailable)
+TRANSIENT_ERRORS = (StorageUnreachable, EngineUnavailable, LLMUnavailable)
 
 
 def utc_now() -> datetime:
@@ -43,6 +46,7 @@ class JobService:
         queue: TaskQueue,
         engine: TransformEngine,
         results: ResultStore,
+        patterns: PatternService,
         *,
         max_active_jobs: int,
         max_attempts: int,
@@ -55,6 +59,7 @@ class JobService:
         self._queue = queue
         self._engine = engine
         self._results = results
+        self._patterns = patterns
         self._max_active_jobs = max_active_jobs
         self._max_attempts = max_attempts
         self._stale_after = stale_after
@@ -64,17 +69,32 @@ class JobService:
     # --- the API side ---------------------------------------------------------------------
 
     def submit(
-        self, token: str | None, file_key: str, pattern: str, replacement: str, columns: list[str]
+        self,
+        token: str | None,
+        file_key: str,
+        replacement: str,
+        columns: list[str],
+        pattern: str = "",
+        prompt: str | None = None,
     ) -> Job:
-        """Validate, persist as QUEUED and hand to a worker. Returns without doing the work."""
+        """Validate, persist as QUEUED and hand to a worker. Returns without doing the work.
+
+        The job carries either a pattern or a plain-English prompt. A prompt is turned into a
+        pattern by the worker, not here: that is a call to a language model, and no request
+        waits on one.
+        """
         connection = self._connections.get(token)
         file_format = FileFormat.from_key(file_key)
         if file_format is None:
             raise UnsupportedFile()
-        try:
-            re.compile(pattern)
-        except re.error as error:
-            raise InvalidPattern(str(error)) from error
+        if prompt:
+            if not self._patterns.can_write:
+                raise LLMNotConfigured()
+        else:
+            try:
+                re.compile(pattern)
+            except re.error as error:
+                raise InvalidPattern(str(error)) from error
         if self._jobs.count_active(connection.id) >= self._max_active_jobs:
             raise TooManyActiveJobs()
 
@@ -87,6 +107,8 @@ class JobService:
             replacement=replacement,
             columns=columns,
             created_at=self._now(),
+            prompt=prompt or None,
+            pattern_source="llm" if prompt else "user",
         )
         self._jobs.add(job)
         self._queue.enqueue_job(job.id)
@@ -163,6 +185,8 @@ class JobService:
         self._results.delete(job.id)  # a clean slate, so a re-run never mixes with an old one
         try:
             connection = self._connections.get_by_id(job.connection_id)
+            if not self._settle_pattern(job):
+                return  # the job changed hands while its pattern was being written
             result = self._engine.run(
                 job,
                 connection,
@@ -190,6 +214,23 @@ class JobService:
             )
             if not changed:  # it was marked failed or cancelled while the engine finished
                 self._results.delete(job.id)
+
+    def _settle_pattern(self, job: Job) -> bool:
+        """Before any data is read: write the pattern if the job came with a prompt, and refuse
+        one that could run for ever. False if the job was taken away in the meantime."""
+        if job.needs_pattern:
+            self._report(job, "Writing the pattern")
+            suggestion, from_cache = self._patterns.suggest(job.prompt)
+            # Persisted at once, so a retry or a takeover reuses it and the page can show it.
+            return self._change(job, lambda: job.adopt(suggestion, from_cache))
+        if job.pattern_source == "user":
+            self._report(job, "Checking the pattern")
+            self._patterns.check(job.pattern)  # a written pattern was checked when it was adopted
+        return True
+
+    def _report(self, job: Job, stage: str) -> None:
+        job.stage = stage
+        self._jobs.save_progress(job.id, job.progress, stage)
 
     def fail_unexpected(self, job_id: str, code: str, message: str) -> None:
         """For the task layer: an attempt ended in a way no use-case anticipated."""

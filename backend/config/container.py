@@ -17,6 +17,7 @@ from infrastructure.result_store import ParquetResultStore
 from infrastructure.s3_storage import S3Storage
 from services.connections import ConnectionService
 from services.jobs import JobService
+from services.patterns import PatternService
 from services.previews import PreviewService
 
 
@@ -49,6 +50,32 @@ def _engine():
 
 
 @cache
+def pattern_service() -> PatternService:
+    from infrastructure.claude_pattern_writer import (
+        INSTRUCTIONS_VERSION,
+        ClaudePatternWriter,
+        UnconfiguredPatternWriter,
+    )
+    from infrastructure.pattern_cache import CachePatternStore
+    from infrastructure.pattern_probe import SubprocessPatternProbe
+
+    if settings.ANTHROPIC_API_KEY:
+        writer = ClaudePatternWriter(
+            settings.ANTHROPIC_API_KEY, settings.LLM_MODEL, settings.LLM_TIMEOUT
+        )
+    else:
+        writer = UnconfiguredPatternWriter()
+    return PatternService(
+        writer=writer,
+        cache=CachePatternStore(
+            namespace=f"{settings.LLM_MODEL}:v{INSTRUCTIONS_VERSION}",
+            ttl=settings.PATTERN_CACHE_TTL,
+        ),
+        probe=SubprocessPatternProbe(),
+    )
+
+
+@cache
 def job_service() -> JobService:
     return JobService(
         connections=connection_service(),
@@ -56,6 +83,7 @@ def job_service() -> JobService:
         queue=CeleryTaskQueue(),
         engine=_engine(),
         results=ParquetResultStore(settings.RESULTS_DIR),
+        patterns=pattern_service(),
         max_active_jobs=settings.JOB_MAX_ACTIVE_PER_CONNECTION,
         max_attempts=settings.JOB_MAX_ATTEMPTS,
         stale_after=timedelta(seconds=settings.JOB_STALE_AFTER),

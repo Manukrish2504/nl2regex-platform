@@ -82,6 +82,13 @@ SPARK_CONF = {
 # one job at a time. With N jobs at once, give each a share: the cluster's cores divided by N.
 if os.environ.get("SPARK_CORES_MAX"):
     SPARK_CONF["spark.cores.max"] = os.environ["SPARK_CORES_MAX"]
+# Turns a plain-English request into a pattern. Without a key that mode is switched off and the
+# rest of the application works as before. The model was chosen by scripts/eval_prompts.py.
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+LLM_MODEL = os.environ.get("LLM_MODEL", "claude-sonnet-5")
+LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "20"))
+PATTERN_CACHE_TTL = 30 * 24 * 60 * 60
+
 # boto3 reads this variable by itself; Spark's S3 connector has to be told. Only set for
 # S3-compatible stores and local fakes, never for AWS.
 S3_ENDPOINT_URL = os.environ.get("AWS_ENDPOINT_URL_S3")
@@ -134,6 +141,12 @@ LOGGING = {
         # The Python-to-JVM bridge. At DEBUG it prints every call it relays, and the calls that
         # configure a Spark session carry the keys.
         "py4j": {"level": "WARNING"},
+        # The same rule for the Anthropic SDK and the HTTP client under it, whose debug output
+        # includes request headers.
+        "anthropic": {"level": "WARNING"},
+        "httpx": {"level": "WARNING"},
+        "httpx2": {"level": "WARNING"},
+        "httpcore": {"level": "WARNING"},
     },
 }
 

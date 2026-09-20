@@ -10,9 +10,12 @@ class JobRecord(models.Model):
     connection_id = models.CharField(max_length=64)
     file_key = models.CharField(max_length=1024)
     file_format = models.CharField(max_length=16)
-    pattern = models.TextField()
+    pattern = models.TextField(blank=True)  # empty until written, for a job that came as a prompt
     replacement = models.TextField(blank=True)
     columns = models.JSONField(default=list)
+    prompt = models.TextField(null=True)
+    explanation = models.TextField(null=True)
+    pattern_source = models.CharField(max_length=8, default="user")
     status = models.CharField(max_length=16)
     progress = models.PositiveSmallIntegerField(default=0)
     stage = models.CharField(max_length=300, blank=True)

@@ -14,7 +14,12 @@ from api.serializers import (
     PreviewQuerySerializer,
 )
 from config import celery_app
-from config.container import connection_service, job_service, preview_service
+from config.container import (
+    connection_service,
+    job_service,
+    pattern_service,
+    preview_service,
+)
 from domain.connections import Connection, S3Credentials
 from domain.jobs import Job
 
@@ -40,6 +45,12 @@ def health(request):
         "worker": _check(lambda: celery_app.control.ping(timeout=2, limit=1)),
     }
     return Response(checks, status=200 if all(checks.values()) else 503)
+
+
+@api_view(["GET"])
+def config(request):
+    """What this server can do, so the UI offers only that."""
+    return Response({"describe_available": pattern_service().can_write})
 
 
 class ConnectRateThrottle(AnonRateThrottle):
@@ -191,7 +202,10 @@ def _job_json(job: Job) -> dict:
         "cancel_requested": job.cancel_requested,
         "file_key": job.file_key,
         "file_format": job.file_format.value,
-        "pattern": job.pattern,
+        "prompt": job.prompt,
+        "pattern": job.pattern,  # empty while a worker is still writing it from the prompt
+        "pattern_source": job.pattern_source,
+        "explanation": job.explanation,
         "replacement": job.replacement,
         "columns": job.columns,
         "error": (

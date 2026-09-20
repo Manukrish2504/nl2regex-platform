@@ -12,6 +12,7 @@ _STATUS_BY_DOMAIN_ERROR = {
     errors.InvalidCredentials: 400,
     errors.InvalidPageToken: 400,
     errors.InvalidPattern: 400,
+    errors.LLMNotConfigured: 400,
     errors.UnsupportedFile: 400,
     errors.ConnectionNotFound: 401,
     errors.BucketAccessDenied: 403,

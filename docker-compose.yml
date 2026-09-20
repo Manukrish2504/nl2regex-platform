@@ -26,6 +26,10 @@ x-backend: &backend
     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nl2regex}
     REDIS_URL: redis://redis:6379
     RESULTS_DIR: /data/results
+    # Optional. Without it, describing a pattern in plain English is switched off and the rest
+    # works. Put it in a git-ignored .env beside this file; either name is read.
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-${CLAUDE_API_KEY:-}}
+    LLM_MODEL: ${LLM_MODEL:-claude-sonnet-5}
     # "streaming" swaps Spark for the single-process reference engine, which needs no JVM.
     TRANSFORM_ENGINE: ${TRANSFORM_ENGINE:-spark}
     # Set to local[N] to run Spark inside the job worker instead, on a machine too small for a

@@ -23,7 +23,12 @@ def _isolated_services(settings, tmp_path):
     from config import container
 
     settings.RESULTS_DIR = tmp_path / "results"
-    for factory in (container.connection_service, container.job_service, container.preview_service):
+    for factory in (
+        container.connection_service,
+        container.pattern_service,
+        container.job_service,
+        container.preview_service,
+    ):
         factory.cache_clear()
 
 

@@ -5,6 +5,12 @@ from infrastructure.models import JobRecord
 # Everything a status change may write. cancel_requested is absent on purpose: only
 # request_cancel() writes it, so a worker saving its state can never erase a cancel request.
 _MUTABLE_FIELDS = (
+    # A job that came with a prompt gets these from the worker that wrote its pattern.
+    "pattern",
+    "replacement",
+    "columns",
+    "explanation",
+    "pattern_source",
     "status",
     "progress",
     "stage",
@@ -25,9 +31,7 @@ class DjangoJobRepository:
             connection_id=job.connection_id,
             file_key=job.file_key,
             file_format=job.file_format.value,
-            pattern=job.pattern,
-            replacement=job.replacement,
-            columns=job.columns,
+            prompt=job.prompt,
             cancel_requested=job.cancel_requested,
             created_at=job.created_at,
             **_mutable_values(job),
@@ -84,6 +88,9 @@ def _to_job(record: JobRecord) -> Job:
         replacement=record.replacement,
         columns=list(record.columns),
         created_at=record.created_at,
+        prompt=record.prompt,
+        explanation=record.explanation,
+        pattern_source=record.pattern_source,
         status=JobStatus(record.status),
         progress=record.progress,
         stage=record.stage,

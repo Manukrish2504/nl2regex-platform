@@ -101,10 +101,26 @@ def fit(row: Row, width: int) -> Row:
 
 
 def target_indexes(header: list[str], wanted: list[str]) -> list[int]:
-    """Positions of the wanted columns. An empty request means every column."""
+    """Positions of the wanted columns. An empty request means every column.
+
+    An exact name wins. Failing that, case, spaces, underscores and hyphens are ignored, so a
+    request that says "the email column" finds `Email`, and "first name" finds `First_Name`. A
+    name that still matches nothing fails the job; it never quietly means "every column".
+    """
     if not wanted:
         return list(range(len(header)))
-    missing = [name for name in wanted if name not in header]
+    loosely = {_loose(name): index for index, name in reversed(list(enumerate(header)))}
+    indexes, missing = [], []
+    for name in wanted:
+        index = header.index(name) if name in header else loosely.get(_loose(name))
+        if index is None:
+            missing.append(name)
+        elif index not in indexes:
+            indexes.append(index)
     if missing:
         raise ColumnNotFound(missing)
-    return [header.index(name) for name in wanted]
+    return indexes
+
+
+def _loose(name: str) -> str:
+    return "".join(character for character in name.casefold() if character not in " _-")
