@@ -118,10 +118,27 @@ export function Composer() {
   const ready =
     kind === 'replace' ? text.trim() !== '' : kind === 'standardise' ? columns.length === 1 : true
   const canSubmit = Boolean(file) && ready && !submitting
-  // One real value from the preview and what a language model would be shown in its place.
-  const example = preview.data?.status === 'done'
-    ? preview.data.rows.flat().find((cell) => cell && /[@\d]/.test(cell) && cell.length > 7)
-    : undefined
+
+  /** What to do next, or what will be sent to Claude before it is sent. */
+  function hint() {
+    if (!connection) return 'Connect a bucket and choose a file to begin.'
+    if (!file) return 'Choose a file to begin.'
+    if (kind === 'redact_pii') {
+      // A real value from the preview, beside the shape that goes in its place.
+      const rows = preview.data?.status === 'done' ? preview.data.rows : []
+      const example = rows.flat().find((cell) => cell && /[@\d]/.test(cell) && cell.length > 7)
+      const shown = example ? `: “${example}” goes as “${shapeOf(example)}”` : ''
+      return `Claude is sent column names and the shape of a few values, never a value${shown}.`
+    }
+    if (kind === 'standardise') {
+      return columns.length === 1
+        ? `The distinct values of “${columns[0]}” will be sent to Claude, 300 at most. A column with more is refused, not sent.`
+        : 'Click the one column to standardise. Its distinct values, and nothing else, will be sent to Claude.'
+    }
+    return mode === 'describe'
+      ? 'Claude writes the pattern, and it is checked before it runs. Only this sentence is sent, never your data.'
+      : 'The replacement is used as literal text. Press Enter to run.'
+  }
 
   return (
     <section className="flex w-full flex-col items-center gap-8">
@@ -275,23 +292,7 @@ export function Composer() {
             <AlertDescription>{error.message}</AlertDescription>
           </Alert>
         ) : (
-          <p className="text-center text-xs text-muted-foreground">
-            {!connection
-              ? 'Connect a bucket and choose a file to begin.'
-              : !file
-                ? 'Choose a file to begin.'
-                : kind === 'redact_pii'
-                  ? example
-                    ? `Claude is sent column names and the shape of a few values, never a value: “${example}” goes as “${shapeOf(example)}”.`
-                    : 'Claude is sent column names and the shape of a few values (letters become a, digits become 9), never a value.'
-                  : kind === 'standardise'
-                    ? columns.length === 1
-                      ? `The distinct values of “${columns[0]}” will be sent to Claude, 300 at most. A column with more is refused, not sent.`
-                      : 'Click the one column to standardise. Its distinct values, and nothing else, will be sent to Claude.'
-                    : mode === 'describe'
-                      ? 'Claude writes the pattern, and it is checked before it runs. Only this sentence is sent, never your data.'
-                      : 'The replacement is used as literal text. Press Enter to run.'}
-          </p>
+          <p className="text-center text-xs text-muted-foreground">{hint()}</p>
         )}
       </div>
 

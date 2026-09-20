@@ -2,34 +2,18 @@
 one is also a check that the two agree."""
 
 import io
-from datetime import UTC, datetime
+from datetime import datetime
 
 import pytest
-from fakes import run_replace
+from fakes import EMAIL, job_for, run_replace
 from openpyxl import Workbook
 
 from domain import errors
-from domain.connections import FileFormat
-from domain.jobs import Job, JobCancelled
+from domain.jobs import JobCancelled
 from domain.operations import MapValues, MaskCells, Replace
 from infrastructure import streaming_engine
 from infrastructure.result_store import ParquetResultStore
 from infrastructure.streaming_engine import StreamingEngine
-
-EMAIL = r"[\w.+-]+@[\w-]+\.[\w.]+"
-
-
-def job_for(key, pattern=EMAIL, replacement="REDACTED", columns=()):
-    return Job(
-        id="job",
-        connection_id="a" * 64,
-        file_key=key,
-        file_format=FileFormat.from_key(key),
-        pattern=pattern,
-        replacement=replacement,
-        columns=list(columns),
-        created_at=datetime(2026, 9, 20, tzinfo=UTC),
-    )
 
 
 @pytest.fixture(params=["streaming", pytest.param("spark", marks=pytest.mark.spark)])

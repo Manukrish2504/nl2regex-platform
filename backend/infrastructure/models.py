@@ -4,7 +4,11 @@ from django.db import models
 
 
 class JobRecord(models.Model):
-    """The stored form of domain.jobs.Job. DjangoJobRepository maps between the two."""
+    """The stored form of domain.jobs.Job. DjangoJobRepository maps between the two.
+
+    `infrastructure` is an installed app only so that Django manages this table. The ORM never
+    reaches the domain: the repository converts, and the architecture test enforces it.
+    """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     connection_id = models.CharField(max_length=64)

@@ -1,13 +1,11 @@
 import io
-import tempfile
 from itertools import islice
-from pathlib import Path
 
 from domain.connections import Connection, FileFormat
-from domain.errors import FileTooLarge
 from domain.tables import FilePreview
 from infrastructure import tabular
-from infrastructure.s3_storage import open_object, read_first_lines, translated_errors
+from infrastructure.s3_storage import read_first_lines
+from infrastructure.streaming_engine import downloaded_excel
 
 PREVIEW_ROWS = 20
 
@@ -27,15 +25,8 @@ class S3FileInspector:
 
     def _preview_excel(self, connection: Connection, file_key: str) -> FilePreview:
         """An .xlsx is a zip archive, so all of it has to be downloaded before any row is read."""
-        body, size = open_object(connection, file_key)
-        if size > tabular.EXCEL_MAX_BYTES:
-            raise FileTooLarge()
-        with tempfile.NamedTemporaryFile(suffix=".xlsx") as local:
-            with translated_errors(connection.bucket):
-                for chunk in body.iter_chunks(1024 * 1024):
-                    local.write(chunk)
-            local.flush()
-            return _preview(tabular.excel_rows(Path(local.name)))
+        with downloaded_excel(connection, file_key, lambda *_: None) as workbook:
+            return _preview(tabular.excel_rows(workbook))
 
 
 def _preview(rows) -> FilePreview:
