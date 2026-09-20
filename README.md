@@ -8,10 +8,10 @@ asynchronously via Celery.
 
 ![The composer with a file chosen from S3](assets/screenshots/composer.png)
 
-> Work in progress. So far, end to end: connect your S3 bucket, choose a file, preview it, give a
-> regex and a replacement, pick the columns, and an asynchronous job has PySpark rewrite the file
-> with live progress, cancellation, retries and paginated results. Natural-language patterns (LLM),
-> the deployment URL and the demo video land here as the build progresses.
+> Work in progress. So far, end to end: connect your S3 bucket, choose a file, preview it, describe
+> what to find in plain English (or type a regex), and an asynchronous job has Claude write and
+> check the pattern and PySpark rewrite the file, with live progress, cancellation, retries and
+> paginated results. The deployment URL and the demo video land here as the build progresses.
 
 ## Run
 
@@ -27,7 +27,9 @@ docker compose up --build
 | Spark cluster (its workers and applications) | http://localhost:8080 |
 | Spark job (stages and tasks, only while a job runs) | http://localhost:4040 |
 
-No `.env` is needed for local development; compose supplies dev-only defaults. The first build
+No `.env` is needed for local development; compose supplies dev-only defaults. To describe patterns
+in plain English, put `ANTHROPIC_API_KEY=...` in a git-ignored `.env` beside `docker-compose.yml`.
+Without it that mode is switched off, with an explanation, and everything else works. The first build
 downloads about 1.2 GB (PySpark, a Java runtime and Spark's S3 connector) into an image of about
 2 GB that every backend service shares. Everything below was measured with Docker limited to 8 GB
 of memory; on a smaller machine, `SPARK_MASTER_URL=local[2] docker compose up` runs Spark inside
@@ -67,11 +69,12 @@ milliseconds. A Celery worker does the work and the browser polls.
 
 | Endpoint | Behaviour |
 |---|---|
-| `POST /api/jobs/` | Body `{file_key, pattern, replacement, columns}`. `202` with the job. Rate limited. |
+| `POST /api/jobs/` | Body `{file_key, replacement, columns}` plus either `pattern` or `prompt`. `202` with the job. Rate limited. |
 | `GET /api/jobs/` · `GET /api/jobs/{id}/` | This connection's jobs: status, progress, stage, error, row counts. |
 | `POST /api/jobs/{id}/cancel/` | A queued job is cancelled at once. A running one has its Spark job cancelled, within a second. |
 | `GET /api/jobs/{id}/rows/?page=&page_size=` | One page of the result. `409` until the job succeeds. |
 | `GET /api/connection/files/preview/?key=` | Column names and first rows, read by a worker. Poll until `done`. |
+| `GET /api/config/` | Whether this server can turn a prompt into a pattern, so the UI offers only what works. |
 
 - **The state machine lives on the `Job` entity** (`QUEUED`, `RUNNING`, `SUCCESS`, `FAILED`,
   `CANCELLED`), and every status change is persisted as a compare-and-set:
@@ -100,9 +103,71 @@ milliseconds. A Celery worker does the work and the browser polls.
 | The same message reaches two workers | The compare-and-set lets one start. The other sees no row change and stops. |
 | S3 drops out while Spark is reading | Spark's own retries run out, the Java error is translated to "could not reach S3", and the job takes the retry path in the first row. |
 | A regex that Python accepts and Java does not | The job fails with `invalid_pattern` and Java's own explanation, before any data is read. |
-| A regex that backtracks forever | Cancel works: stopping the Spark application kills the stuck match. (A guard that refuses such patterns up front arrives with the LLM integration.) |
+| A regex that backtracks forever | Refused before any data is read, whether Claude wrote it or a person typed it: `unsafe_pattern`, quoting the input that hung it. If one ever slips through, Cancel still works, because stopping the Spark application kills the stuck match. |
+| Claude is unreachable, rate limited or overloaded | The SDK retries twice, then the job takes the retry path in the first row and ends as `llm_unavailable`. |
+| The request is not about finding anything ("what is the weather today") | The job fails as `pattern_not_understood`, with Claude's own reason. |
+| Claude cannot write a pattern that passes the checks in three attempts | The job fails as `pattern_not_verified` and says which check failed. A wrong pattern is never run. |
 | A Spark worker dies mid-job | Spark reschedules its tasks on the workers that are left. Checked by killing one of two worker containers at 25%: the job succeeded on its first attempt with the same row counts, in 22 s instead of 16 s. |
 | The Spark master cannot be reached | The driver gives up after a minute, the job shows "Retrying: The processing cluster could not be reached", and after three attempts it fails with `engine_unavailable`. Workers re-register by themselves when the master returns. |
+
+### From plain English to a pattern
+
+> *"Find email addresses in the Email column and replace them with 'REDACTED'."*
+
+That sentence, from the brief, is a complete request here. The job is queued at once, and its
+worker's first stage is *Writing the pattern*: the call to Claude is heavy work, so it belongs in
+the Celery task and never in a web request.
+
+- **Only the sentence goes to Claude.** No column names, no sample rows. A tool whose main use is
+  redacting personal data should not send that data to a third party in order to do it. A test
+  replaces the network at the wire and pins the request's shape, so sending anything more would
+  have to be done on purpose. It also makes the answer a pure function of the sentence, which is
+  what makes it cacheable.
+- **The answer is a structured object,** not text. Structured outputs constrain decoding to a
+  schema, so a regex arrives with its backslashes intact, which asking for "JSON with a regex in
+  it" does not guarantee. Besides the pattern it holds a one-line explanation, the replacement and
+  the columns *if the sentence states them*, and a few strings that should and should not match.
+  Whatever you fill in yourself wins over the sentence. "The Email column" finds a column called
+  `email`: names are matched exactly first, then ignoring case, spaces and underscores, and a name
+  that matches nothing fails the job by name instead of quietly meaning "every column".
+- **Claude's pattern is not trusted.** Before it is used it has to:
+  1. compile, and avoid syntax that Python accepts and Java does not;
+  2. **pass the examples Claude wrote for it**, which catches a pattern that is wrong somewhere
+     (in a trial, a phone pattern missed two of its own five examples);
+  3. survive a **timed dry run in a child process that can be killed**.
+
+  A failure goes back to Claude with the reason, including what matched where, at most twice.
+  Then the job fails with that reason. Only a pattern that passed is cached or run.
+- **The dry run is how catastrophic backtracking is caught.** A backtracking regex engine cannot
+  be interrupted from inside, in Python or in Java. So the pattern is tried in a child process on
+  runs of its own characters with an ending that spoils the match (`aaaa…a!`, `1111…!`,
+  `a a a …!`), and the child is killed at two seconds. It is tuned so that `\s+$`, which is
+  quadratic and harmless, passes, and cubic or exponential patterns do not: `(a+)+$`,
+  `(.*a){12}$`, and OWASP's e-mail example are all refused. Typed patterns get the same check.
+  Measuring behaviour also avoids the false alarms of a syntactic rule: Claude's e-mail pattern
+  contains `(?:\.[\w-]+)*`, a nested quantifier that is perfectly linear. The inputs are a
+  heuristic, and the code says so; behind them, Cancel and the job's time limit still apply.
+- **Redis caches the verified answer** for 30 days, keyed by the sentence after lower-casing,
+  collapsing whitespace and dropping a final full stop, together with the model and the version
+  of the instructions. The job records whether its pattern came from `llm`, `cache` or `user`.
+  Checked on the running stack: the brief's sentence run twice made one API call.
+
+**The model was chosen by measurement.** `scripts/eval_prompts.py` sends 42 requests, several
+phrasings each of 17 kinds of thing to find, through the whole pipeline with the cache off. A
+request passes when its pattern finds every string it should, finds nothing in those it should not,
+and replaces exactly the expected span.
+
+| Model | Passed | API calls (with repairs) | Median | 90th percentile |
+|---|---|---|---|---|
+| `claude-haiku-4-5` | 23 / 42 | 79 | 3.9 s | 9.4 s |
+| `claude-sonnet-5` | 41 / 42 | 50 | 3.7 s | 8.7 s |
+| `claude-opus-5` (default) | **42 / 42** | 46 | 5.0 s | 11.5 s |
+
+The default is the one that passed everything; `LLM_MODEL` changes it, and Sonnet is the choice if
+a second of latency matters more than the last request in forty. Sonnet's one miss failed safe,
+as `pattern_not_verified`. The same script is how the instructions were improved: a first version
+scored 32 and 35 out of 39 on Sonnet and Opus, and its failures showed why (a `\b` placed next to
+`(` or `$`, and negative examples that contained a valid match inside them).
 
 ### What runs where
 
@@ -294,7 +359,9 @@ uv run ruff check .
 
 Tests use in-memory caches, SQLite and a fake S3 ([moto](https://github.com/getmoto/moto)), and the
 same commands run in CI on every pull request. The task layer is tested by running the real Celery
-tasks against the real repository and result store.
+tasks against the real repository and result store. No test reaches a language model: the service
+is tested with a scripted stand-in, and the Claude adapter with the network replaced at the wire.
+The safety probe's tests run real catastrophic patterns against a real child process.
 
 The engine tests run every case on both engines, so each one also checks that Spark and the
 reference engine agree, and a differential test compares their output on messy generated data. They
