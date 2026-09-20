@@ -34,9 +34,8 @@ function PromptInput({
 }: PromptInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  // The box grows with the text instead of scrolling inside a fixed height, and only scrolls once
-  // it reaches its maximum. CSS can do this alone (field-sizing: content), but Safari and Firefox
-  // do not support that yet, so the height is measured.
+  // The text area is sized to its content, so the box grows with the text. CSS can do this alone
+  // (field-sizing: content), but Safari and Firefox do not support that yet, so it is measured.
   useLayoutEffect(() => {
     const textarea = textareaRef.current
     if (!textarea) return
@@ -62,16 +61,21 @@ function PromptInput({
     >
       {attachments && <div className="flex flex-wrap gap-2 px-1 pb-2">{attachments}</div>}
 
-      <Textarea
-        ref={textareaRef}
-        value={value}
-        onChange={(event) => onValueChange(event.target.value)}
-        onKeyDown={handleKeyDown}
-        placeholder={placeholder}
-        aria-label={placeholder}
-        rows={1}
-        className="max-h-[45vh] min-h-12 resize-none rounded-none border-0 bg-transparent px-2 py-1.5 text-base focus-visible:ring-0 md:text-base dark:bg-transparent"
-      />
+      {/* The text area itself never scrolls (overflow-hidden): a measured height can land a
+          fraction of a pixel short at some zoom levels, and that alone would draw a scrollbar.
+          This wrapper scrolls instead, and only once the text outgrows the height cap. */}
+      <div className="max-h-[45vh] overflow-y-auto">
+        <Textarea
+          ref={textareaRef}
+          value={value}
+          onChange={(event) => onValueChange(event.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholder}
+          aria-label={placeholder}
+          rows={1}
+          className="min-h-12 resize-none overflow-hidden rounded-none border-0 bg-transparent px-2 py-1.5 text-base focus-visible:ring-0 md:text-base dark:bg-transparent"
+        />
+      </div>
 
       <div className="flex items-center justify-between gap-2 pt-2">
         <div className="flex min-w-0 items-center gap-1">{actions}</div>
