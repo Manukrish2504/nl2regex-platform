@@ -224,6 +224,12 @@ def test_s3a_settings_carry_only_this_connections_keys():
             "SdkClientException: Unable to execute HTTP request: timed out",
             errors.StorageUnreachable,
         ),
+        ("Cannot call methods on a stopped SparkContext.", errors.EngineUnavailable),
+        # A lost master also mentions an unknown host, and must not be blamed on S3.
+        (
+            "All masters are unresponsive! ... java.net.UnknownHostException: spark-master",
+            errors.EngineUnavailable,
+        ),
     ],
 )
 def test_java_failures_become_domain_errors(java_text, expected):

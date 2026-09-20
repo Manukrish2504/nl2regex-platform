@@ -23,11 +23,15 @@ docker compose up --build
 |---|---|
 | UI | http://localhost:5173 |
 | API health | http://localhost:8000/api/health/ |
-| Flower (worker monitoring) | http://localhost:5555 |
+| Flower (Celery workers, queues, tasks) | http://localhost:5555 |
+| Spark cluster (its workers and applications) | http://localhost:8080 |
+| Spark job (stages and tasks, only while a job runs) | http://localhost:4040 |
 
 No `.env` is needed for local development; compose supplies dev-only defaults. The first build
 downloads about 1.2 GB (PySpark, a Java runtime and Spark's S3 connector) into an image of about
-2 GB that every backend service shares.
+2 GB that every backend service shares. Everything below was measured with Docker limited to 8 GB
+of memory; on a smaller machine, `SPARK_MASTER_URL=local[2] docker compose up` runs Spark inside
+the job worker instead of on the cluster, with the same engine.
 
 ## Architecture
 
@@ -97,6 +101,35 @@ milliseconds. A Celery worker does the work and the browser polls.
 | S3 drops out while Spark is reading | Spark's own retries run out, the Java error is translated to "could not reach S3", and the job takes the retry path in the first row. |
 | A regex that Python accepts and Java does not | The job fails with `invalid_pattern` and Java's own explanation, before any data is read. |
 | A regex that backtracks forever | Cancel works: stopping the Spark application kills the stuck match. (A guard that refuses such patterns up front arrives with the LLM integration.) |
+| A Spark worker dies mid-job | Spark reschedules its tasks on the workers that are left. Checked by killing one of two worker containers at 25%: the job succeeded on its first attempt with the same row counts, in 22 s instead of 16 s. |
+| The Spark master cannot be reached | The driver gives up after a minute, the job shows "Retrying: The processing cluster could not be reached", and after three attempts it fails with `engine_unavailable`. Workers re-register by themselves when the master returns. |
+
+### What runs where
+
+```
+browser ─▶ web (Django API) ──┬─▶ Postgres   jobs and their state
+                              └─▶ Redis      broker · results · cache · encrypted credential vault
+                                    │
+             queue "celery" ◀───────┴───────▶ queue "jobs"
+                    │                               │
+             worker (previews)               worker-jobs: one Celery task = the DRIVER of one
+                                             Spark application, started for that job alone
+                                                    │
+                                             spark-master ─▶ spark-worker × 2 (2 cores each)
+                                                               executors read s3a:// directly
+                                                               and write Parquet to a volume
+                                                               that web reads pages from
+```
+
+- **Jobs have their own queue and worker.** A Spark application takes cores from the cluster, so
+  how many jobs run at once is a capacity decision, not a side effect of Celery's concurrency. The
+  default is one job at a time with the whole cluster to itself; the next one waits as `QUEUED`,
+  which is the truth. With `JOB_CONCURRENCY=N`, set `SPARK_CORES_MAX` to each job's share of the
+  cores, or the first job takes them all.
+- **Previews never wait behind a job.** They run on the other worker (checked: a preview answered
+  in 0.2 s while one job was running and another was queued).
+- **To scale out,** add Spark workers: `docker compose up -d --scale spark-worker=4`. Nothing else
+  changes, because the engine only knows the master's URL.
 
 ### The Spark engine: partitioning and parallelism
 
@@ -130,8 +163,10 @@ s3a://bucket/key ─▶ 32 MB splits ─▶ regexp_replace on the target columns
   replaced. Hadoop caches S3 clients per bucket name for the life of a JVM, and that cache ignores
   credentials, so a long-lived JVM could read one user's bucket with another user's keys. Here the
   JVM, the keys in it and its caches all end with the job. The JVM is a child of the worker process
-  and exits when that process does, including after `kill -9`. The price is about 3 seconds of
-  start-up per job.
+  and exits when that process does, including after `kill -9`. The price is about 4 seconds of
+  start-up per job, and up to 5 more before a worker slot takes its next job, because Celery
+  looks for finished processes on a 5-second timer. The engine also clears Hadoop's cache itself,
+  so raising `--max-tasks-per-child` trades the second cost away without reopening the hole.
 
 **Java's regex engine is pinned to Python's semantics.** The pattern is checked by Python when it
 is submitted and compiled again in the JVM when the job starts. Two inline flags are prefixed:
@@ -158,8 +193,28 @@ that cannot be split. The worker streams the first sheet into a Parquet file bes
 Spark takes over from there, so both formats share one pipeline. A sheet tops out at 1,048,576
 rows, so this step is never the scale problem.
 
-Measured on the compose stack with Spark on two cores: 4,000,000 rows (404 MB) in 12.9 s from
-submit to done, against 14.9 s for the single-process engine, with identical row counts.
+**Measured**, from submit to done, on the compose stack (Docker on an Apple-silicon laptop, 8 GB,
+an S3-compatible server in the same Docker network). The job redacts email addresses in two of
+seven columns. Every run of a file produced the same row counts on both engines.
+
+| File | Single process (1 core) | Spark, 2 cores | Spark, 4 cores (default) | Spark, 6 cores |
+|---|---|---|---|---|
+| 100,000 rows, 10 MB | **0.5 s** | | 6.6 s | |
+| 4,000,000 rows, 404 MB | 15.5 s | 12.9 s ¹ | **10.6 to 11.6 s** | |
+| 10,000,000 rows, 1.01 GB | 38.1 s | 23.4 s | 16.1 s | **13.2 to 14.6 s** |
+
+¹ Spark in local mode inside the job worker. Every other Spark figure is on the standalone cluster.
+A range is the spread over repeated runs.
+
+- **Spark pays about 4 seconds before the first row**, so it loses on small files and wins from a
+  few million rows up. Routing small files to the single-process engine would be the obvious
+  production optimisation; it is left out so that every job here really runs on Spark.
+- **Scaling is sublinear at this size** because each executor is a fresh JVM: its first seconds go
+  to compiling the generated code, a fixed cost that a 12-second job feels and a 10-minute job
+  would not. The executors, not S3 and not the driver, were the busy containers (each at about
+  200% CPU on its two cores).
+- The last page of the 10-million-row result (row 10,000,000, spread over 32 part files) came back
+  in 17 ms.
 
 ### Frontend
 

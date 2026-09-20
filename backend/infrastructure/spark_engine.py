@@ -6,6 +6,7 @@ Parquet part file, and nothing is ever shuffled.
 
 import logging
 import re
+import socket
 import tempfile
 from collections.abc import Callable
 from contextlib import ExitStack, suppress
@@ -25,6 +26,7 @@ from domain.connections import Connection, FileFormat
 from domain.errors import (
     BucketAccessDenied,
     DomainError,
+    EngineUnavailable,
     FileUnreadable,
     InvalidPattern,
     ObjectNotFound,
@@ -118,6 +120,8 @@ class SparkEngine:
 
             spark = self._session(job)
             try:
+                # Reaching S3 from the JVM (a client, then the file's size) takes its own moment.
+                on_progress(start, "Opening the file")
                 _check_java_pattern(spark, job.pattern)
                 spark.conf.set("spark.sql.files.maxPartitionBytes", str(PARTITION_BYTES))
                 # Set on this session at runtime, so the keys are never part of the SparkConf, a
@@ -145,9 +149,17 @@ class SparkEngine:
             .appName(f"nl2regex-{job.id}")
             .config("spark.ui.showConsoleProgress", "false")
         )
+        if not self._master.startswith("local"):
+            # Executors connect back to the driver, so it advertises an address they can reach.
+            builder = builder.config(
+                "spark.driver.host", socket.gethostbyname(socket.gethostname())
+            )
         for key, value in self._conf.items():
             builder = builder.config(key, value)
-        spark = builder.getOrCreate()
+        try:
+            spark = builder.getOrCreate()
+        except Exception as error:  # a master that cannot be reached surfaces here
+            raise _translate(error) from None
         spark.sparkContext.setLogLevel("WARN")
         return spark
 
@@ -323,6 +335,11 @@ def _write(
 # ponytail: Java failures are recognised by class name in the error text, because PySpark hands
 # over a string and a stack trace. Anything unrecognised stays an internal error.
 _JAVA_FAILURES: tuple[tuple[str, type[DomainError]], ...] = (
+    # The cluster first: a driver that cannot find its master also mentions an unknown host.
+    # It gives up on a master it cannot register with, and stops its own context.
+    ("All masters are unresponsive", EngineUnavailable),
+    ("stopped SparkContext", EngineUnavailable),
+    ("SparkContext was shut down", EngineUnavailable),
     ("AccessDeniedException", BucketAccessDenied),
     ("FileNotFoundException", ObjectNotFound),
     ("UnknownHostException", StorageUnreachable),

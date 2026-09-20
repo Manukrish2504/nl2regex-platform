@@ -162,15 +162,16 @@ def test_an_expired_connection_fails_the_job_with_a_reconnect_message():
     assert world.engine.runs == 0
 
 
-def test_a_transient_failure_requeues_and_asks_for_a_retry():
-    world = World(engine=FakeEngine(error=errors.StorageUnreachable()))
+@pytest.mark.parametrize("error", [errors.StorageUnreachable(), errors.EngineUnavailable()])
+def test_a_transient_failure_requeues_and_asks_for_a_retry(error):
+    world = World(engine=FakeEngine(error=error))
     job = world.submit()
     with pytest.raises(RetryLater):
         world.service.run(job.id)
 
     waiting = world.jobs.get(job.id)
     assert (waiting.status, waiting.attempts) == (JobStatus.QUEUED, 1)
-    assert "Could not reach Amazon S3" in waiting.stage
+    assert error.message in waiting.stage
 
 
 def test_transient_failures_give_up_after_the_attempt_cap():
