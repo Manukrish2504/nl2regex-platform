@@ -7,7 +7,7 @@ from openpyxl import Workbook
 from domain import errors
 from domain.connections import FileFormat, S3Credentials
 from domain.tables import FilePreview
-from infrastructure import file_inspector
+from infrastructure import file_inspector, tabular
 from infrastructure.file_inspector import S3FileInspector
 from infrastructure.preview_store import CachePreviewStore
 from services.connections import ConnectionService
@@ -26,7 +26,7 @@ def test_csv_preview_has_the_columns_and_first_rows(connection, put_object):
 
 
 def test_csv_preview_downloads_only_the_head_of_a_large_file(connection, put_object, monkeypatch):
-    monkeypatch.setattr(file_inspector, "CSV_HEAD_BYTES", 200)
+    monkeypatch.setattr(tabular, "CSV_HEAD_BYTES", 200)
     body = b"id,email\n" + b"".join(b"%d,user%d@example.com\n" % (n, n) for n in range(5000))
     preview = S3FileInspector().preview(connection, put_object("big.csv", body), FileFormat.CSV)
 

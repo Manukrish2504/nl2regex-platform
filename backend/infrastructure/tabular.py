@@ -12,6 +12,8 @@ from domain.tables import Row
 
 # An .xlsx is a zip archive that must be downloaded whole before a single row can be read.
 EXCEL_MAX_BYTES = 200 * 1024 * 1024
+# Enough of a CSV to learn its columns, delimiter and first rows without downloading the rest.
+CSV_HEAD_BYTES = 256 * 1024
 _SNIFF_BYTES = 64 * 1024
 _DELIMITERS = ",;\t|"
 
@@ -19,18 +21,37 @@ _DELIMITERS = ",;\t|"
 csv.field_size_limit(16 * 1024 * 1024)
 
 
-def csv_rows(stream: io.BufferedIOBase) -> Iterator[Row]:
-    """Rows of a UTF-8 CSV (with or without a byte-order mark), with its delimiter detected."""
-    sample = stream.peek(_SNIFF_BYTES)[:_SNIFF_BYTES].decode("utf-8-sig", errors="ignore")
+def sniff_delimiter(head: bytes) -> str:
+    """The delimiter of a CSV, judged from its first bytes."""
+    sample = head[:_SNIFF_BYTES].decode("utf-8-sig", errors="ignore")
     try:
         # Only the delimiter is taken from the sniffer. It also guesses the quoting rules, and
         # gets them wrong often enough to mangle quoted fields, so those stay standard.
-        delimiter = csv.Sniffer().sniff(sample, delimiters=_DELIMITERS).delimiter
+        return csv.Sniffer().sniff(sample, delimiters=_DELIMITERS).delimiter
     except csv.Error:
-        delimiter = ","  # one column, or too little to go on: a comma is the safe guess
+        return ","  # one column, or too little to go on: a comma is the safe guess
+
+
+def csv_header(head: bytes) -> tuple[list[str], str]:
+    """Column names and delimiter from the first bytes of a CSV, for engines that read the rest
+    themselves. `head` must end on a line boundary."""
+    try:
+        head.decode("utf-8-sig")  # strict, so a wrong encoding fails here and not as mojibake
+    except UnicodeDecodeError as error:
+        raise FileUnreadable(
+            "The file is not UTF-8 encoded. Save it as UTF-8 and try again."
+        ) from error
+    return read_header(csv_rows(io.BufferedReader(io.BytesIO(head)))), sniff_delimiter(head)
+
+
+def csv_rows(stream: io.BufferedIOBase) -> Iterator[Row]:
+    """Rows of a UTF-8 CSV (with or without a byte-order mark), with its delimiter detected."""
+    delimiter = sniff_delimiter(stream.peek(_SNIFF_BYTES))
     text = io.TextIOWrapper(stream, encoding="utf-8-sig", newline="")
     try:
         for row in csv.reader(text, delimiter=delimiter):
+            if not row:
+                continue  # a blank line is not a row; Spark's CSV reader skips them too
             # CSV has no way to say "no value", so an empty cell is read as None. Spark's CSV
             # reader does the same by default, which keeps every engine's output identical.
             yield [cell or None for cell in row]

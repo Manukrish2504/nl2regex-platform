@@ -151,3 +151,13 @@ def open_object(connection: Connection, key: str, first_bytes: int | None = None
     content_range = response.get("ContentRange")
     size = int(content_range.rsplit("/", 1)[1]) if content_range else response["ContentLength"]
     return response["Body"], size
+
+
+def read_first_lines(connection: Connection, key: str, max_bytes: int) -> bytes:
+    """The start of an object, cut back to its last complete line. One ranged GET, any file size."""
+    body, size = open_object(connection, key, first_bytes=max_bytes)
+    with translated_errors(connection.bucket):
+        head = body.read()
+    if size > len(head):
+        head = head[: head.rfind(b"\n") + 1]  # drop the line the cut went through
+    return head

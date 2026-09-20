@@ -43,11 +43,12 @@ class StreamingEngine:
             if not cell:
                 return cell, False
             # A function replacement is inserted as-is, so "\1" or "$1" in it stay literal text.
-            replaced, count = pattern.subn(lambda _match: job.replacement, cell)
-            return replaced, count > 0
+            replaced = pattern.sub(lambda _match: job.replacement, cell)
+            # "Changed" means the text differs, not merely that the pattern matched.
+            return replaced, replaced != cell
 
         rows_total = rows_changed = 0
-        with _source_rows(connection, job.file_key, job.file_format, on_progress) as rows:
+        with source_rows(connection, job.file_key, job.file_format, on_progress) as rows:
             header = tabular.read_header(rows)
             targets = tabular.target_indexes(header, job.columns)
             schema = pa.schema([(name, pa.string()) for name in header])
@@ -73,7 +74,7 @@ class StreamingEngine:
 
 
 @contextmanager
-def _source_rows(
+def source_rows(
     connection: Connection, key: str, file_format: FileFormat, on_progress: Progress
 ) -> Iterator[Iterator[Row]]:
     """The file's rows, reporting progress as the bytes (CSV) or rows (Excel) are consumed."""

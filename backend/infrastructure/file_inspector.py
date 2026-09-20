@@ -7,10 +7,9 @@ from domain.connections import Connection, FileFormat
 from domain.errors import FileTooLarge
 from domain.tables import FilePreview
 from infrastructure import tabular
-from infrastructure.s3_storage import open_object, translated_errors
+from infrastructure.s3_storage import open_object, read_first_lines, translated_errors
 
 PREVIEW_ROWS = 20
-CSV_HEAD_BYTES = 256 * 1024
 
 
 class S3FileInspector:
@@ -23,15 +22,8 @@ class S3FileInspector:
 
     def _preview_csv(self, connection: Connection, file_key: str) -> FilePreview:
         """Only the first 256 KB is downloaded, however large the file is."""
-        body, size = open_object(connection, file_key, first_bytes=CSV_HEAD_BYTES)
-        with translated_errors(connection.bucket):
-            head = body.read()
-        truncated = size > len(head)
-        if truncated:
-            head = head[: head.rfind(b"\n") + 1]  # drop the line the cut went through
-
-        rows = tabular.csv_rows(io.BufferedReader(io.BytesIO(head)))
-        return _preview(rows)
+        head = read_first_lines(connection, file_key, tabular.CSV_HEAD_BYTES)
+        return _preview(tabular.csv_rows(io.BufferedReader(io.BytesIO(head))))
 
     def _preview_excel(self, connection: Connection, file_key: str) -> FilePreview:
         """An .xlsx is a zip archive, so all of it has to be downloaded before any row is read."""
