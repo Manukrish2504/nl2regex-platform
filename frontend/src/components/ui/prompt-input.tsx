@@ -1,4 +1,4 @@
-import type { KeyboardEvent, ReactNode } from "react"
+import { useLayoutEffect, useRef, type KeyboardEvent, type ReactNode } from "react"
 import { ArrowUp } from "lucide-react"
 
 import { cn } from "@/lib/utils"
@@ -32,6 +32,18 @@ function PromptInput({
   actions,
   className,
 }: PromptInputProps) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // The box grows with the text instead of scrolling inside a fixed height, and only scrolls once
+  // it reaches its maximum. CSS can do this alone (field-sizing: content), but Safari and Firefox
+  // do not support that yet, so the height is measured.
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current
+    if (!textarea) return
+    textarea.style.height = "auto"
+    textarea.style.height = `${textarea.scrollHeight}px`
+  }, [value])
+
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     // Enter sends and Shift+Enter breaks the line. While an input method is composing text
     // (Japanese, Chinese, Korean), Enter confirms the composition and must not send.
@@ -50,16 +62,15 @@ function PromptInput({
     >
       {attachments && <div className="flex flex-wrap gap-2 px-1 pb-2">{attachments}</div>}
 
-      {/* Height follows the content through CSS (field-sizing-content in Textarea). Browsers
-          without it keep a fixed height and scroll. */}
       <Textarea
+        ref={textareaRef}
         value={value}
         onChange={(event) => onValueChange(event.target.value)}
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
         aria-label={placeholder}
         rows={1}
-        className="max-h-96 min-h-12 resize-none rounded-none border-0 bg-transparent px-2 py-1.5 text-base focus-visible:ring-0 md:text-base dark:bg-transparent"
+        className="max-h-[45vh] min-h-12 resize-none rounded-none border-0 bg-transparent px-2 py-1.5 text-base focus-visible:ring-0 md:text-base dark:bg-transparent"
       />
 
       <div className="flex items-center justify-between gap-2 pt-2">

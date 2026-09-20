@@ -85,7 +85,9 @@ export function Composer() {
         <p className="text-center text-xs text-muted-foreground">
           {file
             ? 'File ready. Running the transformation arrives with the job pipeline.'
-            : 'Connect a bucket and choose a file to begin.'}
+            : connection
+              ? 'Choose a file to begin.'
+              : 'Connect a bucket and choose a file to begin.'}
         </p>
       </div>
 
