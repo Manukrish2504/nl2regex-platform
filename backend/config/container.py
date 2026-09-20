@@ -15,7 +15,6 @@ from infrastructure.job_repository import DjangoJobRepository
 from infrastructure.preview_store import CachePreviewStore
 from infrastructure.result_store import ParquetResultStore
 from infrastructure.s3_storage import S3Storage
-from infrastructure.streaming_engine import StreamingEngine
 from services.connections import ConnectionService
 from services.jobs import JobService
 from services.previews import PreviewService
@@ -33,13 +32,29 @@ def connection_service() -> ConnectionService:
     )
 
 
+def _engine():
+    # Imported on demand, so the reference engine (and most of the test suite) runs without
+    # PySpark ever being loaded.
+    if settings.TRANSFORM_ENGINE == "streaming":
+        from infrastructure.streaming_engine import StreamingEngine
+
+        return StreamingEngine()
+    from infrastructure.spark_engine import SparkEngine
+
+    return SparkEngine(
+        master=settings.SPARK_MASTER_URL,
+        conf=settings.SPARK_CONF,
+        s3_endpoint=settings.S3_ENDPOINT_URL,
+    )
+
+
 @cache
 def job_service() -> JobService:
     return JobService(
         connections=connection_service(),
         jobs=DjangoJobRepository(),
         queue=CeleryTaskQueue(),
-        engine=StreamingEngine(),
+        engine=_engine(),
         results=ParquetResultStore(settings.RESULTS_DIR),
         max_active_jobs=settings.JOB_MAX_ACTIVE_PER_CONNECTION,
         max_attempts=settings.JOB_MAX_ATTEMPTS,

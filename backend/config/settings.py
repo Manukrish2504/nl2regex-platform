@@ -67,6 +67,15 @@ JOB_STALE_AFTER = CELERY_BROKER_TRANSPORT_OPTIONS["visibility_timeout"] + 2 * 60
 # Job output (Parquet). Web and workers must see the same folder: a shared volume in compose.
 RESULTS_DIR = Path(os.environ.get("RESULTS_DIR", BASE_DIR / ".results"))
 
+# "spark" is the engine. "streaming" is the single-process reference implementation the Spark
+# engine is tested against; it needs no JVM, so it doubles as a fallback.
+TRANSFORM_ENGINE = os.environ.get("TRANSFORM_ENGINE", "spark")
+SPARK_MASTER_URL = os.environ.get("SPARK_MASTER_URL", "local[2]")
+SPARK_CONF = {"spark.driver.memory": os.environ.get("SPARK_DRIVER_MEMORY", "1g")}
+# boto3 reads this variable by itself; Spark's S3 connector has to be told. Only set for
+# S3-compatible stores and local fakes, never for AWS.
+S3_ENDPOINT_URL = os.environ.get("AWS_ENDPOINT_URL_S3")
+
 
 def _redis_cache(database: int) -> dict:
     return {
@@ -112,6 +121,9 @@ LOGGING = {
         "boto3": {"level": "WARNING"},
         "botocore": {"level": "WARNING"},
         "urllib3": {"level": "WARNING"},
+        # The Python-to-JVM bridge. At DEBUG it prints every call it relays, and the calls that
+        # configure a Spark session carry the keys.
+        "py4j": {"level": "WARNING"},
     },
 }
 

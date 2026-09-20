@@ -18,3 +18,7 @@ CACHES = {
     alias: {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": alias}
     for alias in ("default", "vault")
 }
+
+# The API and task tests run the reference engine, so they need no JVM. The Spark engine has
+# its own tests, which build it directly.
+TRANSFORM_ENGINE = "streaming"
