@@ -9,9 +9,9 @@ asynchronously via Celery.
 ![The composer with a file chosen from S3](assets/screenshots/composer.png)
 
 > Work in progress. So far, end to end: connect your S3 bucket, choose a file, preview it, give a
-> regex and a replacement, pick the columns, and an asynchronous job rewrites the file with live
-> progress, cancellation, retries and paginated results. The Spark engine, natural-language patterns
-> (LLM), deployment URL and demo video land here as the build progresses.
+> regex and a replacement, pick the columns, and an asynchronous job has PySpark rewrite the file
+> with live progress, cancellation, retries and paginated results. Natural-language patterns (LLM),
+> the deployment URL and the demo video land here as the build progresses.
 
 ## Run
 
@@ -25,7 +25,9 @@ docker compose up --build
 | API health | http://localhost:8000/api/health/ |
 | Flower (worker monitoring) | http://localhost:5555 |
 
-No `.env` is needed for local development; compose supplies dev-only defaults.
+No `.env` is needed for local development; compose supplies dev-only defaults. The first build
+downloads about 1.2 GB (PySpark, a Java runtime and Spark's S3 connector) into an image of about
+2 GB that every backend service shares.
 
 ## Architecture
 
@@ -63,7 +65,7 @@ milliseconds. A Celery worker does the work and the browser polls.
 |---|---|
 | `POST /api/jobs/` | Body `{file_key, pattern, replacement, columns}`. `202` with the job. Rate limited. |
 | `GET /api/jobs/` · `GET /api/jobs/{id}/` | This connection's jobs: status, progress, stage, error, row counts. |
-| `POST /api/jobs/{id}/cancel/` | A queued job is cancelled at once. A running one stops at its next batch. |
+| `POST /api/jobs/{id}/cancel/` | A queued job is cancelled at once. A running one has its Spark job cancelled, within a second. |
 | `GET /api/jobs/{id}/rows/?page=&page_size=` | One page of the result. `409` until the job succeeds. |
 | `GET /api/connection/files/preview/?key=` | Column names and first rows, read by a worker. Poll until `done`. |
 
@@ -75,9 +77,9 @@ milliseconds. A Celery worker does the work and the browser polls.
   disconnecting cancels that connection's jobs and deletes their output.
 - **Workers receive IDs only.** Task arguments are visible in Flower and in the event stream, so
   credentials never travel that way. A worker looks them up in the vault by connection ID.
-- **Results are Parquet**, written in row groups of 10,000 rows. A page read finds its row group
+- **Results are Parquet**, written in row groups of about 1 MB. A page read finds its row group
   from the file footers and reads only that group, so page latency does not grow with the result
-  (measured: 11 ms for a page in the middle of 400,000 rows).
+  (measured: 13 ms for the first page and for the last page of 4,000,000 rows).
 - **Every cell is text, and the replacement is literal.** A cleaning tool must not alter cells it
   was not asked to touch, so `00123` never becomes `123`, and `$1` in a replacement is just `$1`.
 
@@ -92,10 +94,72 @@ milliseconds. A Celery worker does the work and the browser polls.
 | The soft time limit | The task fails its job cleanly with `timed_out`. |
 | The hard time limit (code that cannot be interrupted) | Celery kills the process and acknowledges the message, so nothing redelivers it. A job still `RUNNING` past the visibility timeout is marked failed the next time it is read. |
 | The same message reaches two workers | The compare-and-set lets one start. The other sees no row change and stops. |
+| S3 drops out while Spark is reading | Spark's own retries run out, the Java error is translated to "could not reach S3", and the job takes the retry path in the first row. |
+| A regex that Python accepts and Java does not | The job fails with `invalid_pattern` and Java's own explanation, before any data is read. |
+| A regex that backtracks forever | Cancel works: stopping the Spark application kills the stuck match. (A guard that refuses such patterns up front arrives with the LLM integration.) |
 
-The transform engine in this phase streams the file through one process. It sits behind the
-`TransformEngine` port, which the PySpark engine implements next; this one then stays in the test
-suite as the reference the Spark engine's output is compared against.
+### The Spark engine: partitioning and parallelism
+
+`TransformEngine` is a port with two implementations. `SparkEngine` does the work. `StreamingEngine`
+rewrites a file in one Python process; it is the reference the Spark engine is tested against, and
+`TRANSFORM_ENGINE=streaming` switches to it if a JVM is not an option.
+
+**The plan is map-only.** Every row is independent of every other, so there is nothing to join,
+group or sort, and therefore nothing to shuffle:
+
+```
+s3a://bucket/key ─▶ 32 MB splits ─▶ regexp_replace on the target columns ─▶ one Parquet part per split
+                    (one task each)   (inside the JVM, all partitions at once)
+```
+
+- **The file is read straight from S3** with Hadoop's `s3a` connector. Each task fetches its own
+  byte range, so reading scales with the number of cores, not with one download stream.
+- **32 MB splits, not Spark's 128 MB default.** Rows stream through a task, so memory is not what
+  decides this. Smaller tasks give smoother progress ("7 of 13 partitions"), make a failed task
+  cheap to retry and balance better across cores. Measured on 2 million rows, split sizes from 8 MB
+  to 128 MB changed the run time by less than 10%, so the smaller size costs next to nothing.
+- **The regex is Spark's built-in `regexp_replace`, not a Python UDF.** A built-in compiles into the
+  JVM code Spark generates for the stage. A Python UDF would serialise every row out to a Python
+  process and back. It also means executors need no Python at all.
+- **Counting costs no second pass.** Rows processed and rows changed come from Spark's
+  `Observation` API, which collects aggregates while the write itself runs.
+- **Row order is kept.** Splits become partitions in file order and part files sort the same way,
+  so row 1 of the result is row 1 of the file. A test pins this, because it is Spark's behaviour
+  and not its contract.
+- **One Spark application per job**, in a worker process that handles one task and is then
+  replaced. Hadoop caches S3 clients per bucket name for the life of a JVM, and that cache ignores
+  credentials, so a long-lived JVM could read one user's bucket with another user's keys. Here the
+  JVM, the keys in it and its caches all end with the job. The JVM is a child of the worker process
+  and exits when that process does, including after `kill -9`. The price is about 3 seconds of
+  start-up per job.
+
+**Java's regex engine is pinned to Python's semantics.** The pattern is checked by Python when it
+is submitted and compiled again in the JVM when the job starts. Two inline flags are prefixed:
+`(?U)` makes `\w`, `\d`, `\b` and case-insensitive matching Unicode-aware, as they are in
+Python, so `\w+` matches "Zoë"; `(?d)` makes `\n` the only line terminator. Measured cost: none
+(6.1 s with the flags, 6.0 to 6.3 s without, on 2 million rows). In the replacement, `\` and `$`
+are escaped, because Java would read `$1` as a group reference.
+
+**A CSV can only be split safely if no cell contains a line break,** and from the middle of a file
+nobody can tell whether a newline sits inside quotes. Spark's `multiLine` reader is always correct
+but reads the whole file in one task. So the engine reads optimistically and checks its own work:
+
+1. The first pass uses the splittable reader.
+2. A cell with a line break then falls apart into fragments, and each fragment holds one half of a
+   pair of quotes. Either Spark flags the fragment as malformed and its raw text has an odd number
+   of quotes, or, when the broken cell is in the last column and both fragments happen to have the
+   right number of cells, the closing quote is left inside the last cell. Both are counted by the
+   same `Observation`, during the same write, so the check is free.
+3. Only if that count is not zero is the file read again with `multiLine`, and the job's stage says
+   so. A false alarm, such as an unescaped inch mark, costs the second pass and nothing else.
+
+**Excel is converted to Parquet first.** Spark has no Excel reader, and an `.xlsx` is a zip archive
+that cannot be split. The worker streams the first sheet into a Parquet file beside the results and
+Spark takes over from there, so both formats share one pipeline. A sheet tops out at 1,048,576
+rows, so this step is never the scale problem.
+
+Measured on the compose stack with Spark on two cores: 4,000,000 rows (404 MB) in 12.9 s from
+submit to done, against 14.9 s for the single-process engine, with identical row counts.
 
 ### Frontend
 
@@ -142,7 +206,8 @@ You connect with your own access key, secret key and bucket name. This is what h
 | API responses | No endpoint returns the keys. The connect response contains only the bucket name and its region. |
 | Your browser's handle | A random token in an `HttpOnly`, `SameSite=Strict`, `Secure` cookie. It never appears in a URL or an access log, and JavaScript cannot read it. The server stores only the token's SHA-256, so leaked server data contains nothing a browser could replay. |
 | Logs | Keys are never logged. The credentials object masks itself in `repr`, the AWS SDK loggers are pinned above the level at which they print request headers, and a failed connect logs only the AWS error code, request ID and bucket name. |
-| Background jobs | Workers will receive a connection ID and look the keys up themselves. Keys are never passed as Celery task arguments, which Flower and the result backend would display. |
+| Background jobs | Workers receive a connection ID and look the keys up themselves. Keys are never passed as Celery task arguments, which Flower and the result backend would display. |
+| Inside Spark | The keys are set on one job's Spark session at runtime, so they are never in the Spark configuration, on a command line or in an event log, and Spark redacts them on its UI pages. The provider is pinned to `SimpleAWSCredentialsProvider`: the default chain falls back to the machine's own identity if the keys are ever empty (checked: it does), and the pin refuses instead. The bridge between Python and the JVM is kept above the log level at which it prints the calls it relays. |
 | Abuse | Connect attempts are rate limited per client, so the endpoint cannot be used to test stolen keys in bulk. The API accepts JSON only, which blocks cross-site form posts from connecting a visitor's browser to someone else's bucket. |
 
 Errors are specific: wrong keys, a bucket that doesn't exist, keys without permission on the
@@ -174,7 +239,12 @@ uv run ruff check .
 
 Tests use in-memory caches, SQLite and a fake S3 ([moto](https://github.com/getmoto/moto)), and the
 same commands run in CI on every pull request. The task layer is tested by running the real Celery
-tasks against the real engine, repository and result store.
+tasks against the real repository and result store.
+
+The engine tests run every case on both engines, so each one also checks that Spark and the
+reference engine agree, and a differential test compares their output on messy generated data. They
+start Spark in local mode, which needs Java 17 or 21. Where no such Java is found they are skipped
+with a message; in CI a skip is a failure.
 
 `scripts/make_sample_data.py` generates a deterministic, deliberately messy customer dataset (CSV or
 Excel, any row count) for demos and benchmarks.

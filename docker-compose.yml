@@ -4,6 +4,8 @@
 #   Flower  http://localhost:5555
 
 x-backend: &backend
+  # Every backend service builds the same Dockerfile, so the layers (about 2 GB with Spark, Java
+  # and the S3 connector) are built and stored once, under one tag per service.
   build: ./backend
   volumes:
     - ./backend:/app
@@ -57,7 +59,12 @@ services:
 
   worker:
     <<: *backend
-    command: celery -A config worker --loglevel info --concurrency 2
+    # One task per process: a job's Spark JVM is a child of the process that ran it, so it ends
+    # with the job and takes that connection's keys and cached S3 clients with it.
+    command: celery -A config worker --loglevel info --concurrency 2 --max-tasks-per-child 1
+    # A JVM outlives the process that started it by a moment, so it is orphaned when it exits.
+    # An init process adopts and reaps it; with Celery as PID 1 every job would leave a zombie.
+    init: true
 
   flower:
     <<: *backend

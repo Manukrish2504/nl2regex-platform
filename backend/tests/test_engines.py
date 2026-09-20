@@ -1,3 +1,6 @@
+"""What any engine must do. Every case here runs on the reference engine and on Spark, so each
+one is also a check that the two agree."""
+
 import io
 from datetime import UTC, datetime
 
@@ -27,14 +30,24 @@ def job_for(key, pattern=EMAIL, replacement="REDACTED", columns=()):
     )
 
 
+@pytest.fixture(params=["streaming", pytest.param("spark", marks=pytest.mark.spark)])
+def engine(request, bucket_mirror):
+    if request.param == "streaming":
+        return StreamingEngine()
+    request.getfixturevalue("spark_session")
+    from infrastructure.spark_engine import SparkEngine
+
+    return SparkEngine(master="local[2]", source_root=bucket_mirror.as_uri())
+
+
 @pytest.fixture
-def run(connection, tmp_path):
+def run(engine, connection, tmp_path):
     """Run the engine on a job and return (result, columns, rows, progress reports)."""
     store = ParquetResultStore(tmp_path / "out")
 
     def run_job(job, should_cancel=lambda: False):
         reports = []
-        result = StreamingEngine().run(
+        result = engine.run(
             job,
             connection,
             store.path_for(job.id),
@@ -69,6 +82,25 @@ def test_only_the_chosen_columns_change(run, put_object):
     key = put_object("c.csv", b"email,notes\na@x.com,write to b@y.org\n,nothing here\n")
     _, _, rows, _ = run(job_for(key, columns=["email"]))
     assert rows == [["REDACTED", "write to b@y.org"], [None, "nothing here"]]
+
+
+def test_empty_cells_are_none_whether_quoted_or_not(run, put_object):
+    key = put_object("c.csv", b'a,b,c\n1,,3\n1,"",3\n,,\n')
+    _, _, rows, _ = run(job_for(key, pattern="nothing-matches"))
+    assert rows == [["1", None, "3"], ["1", None, "3"], [None, None, None]]
+
+
+def test_blank_lines_are_not_rows(run, put_object):
+    key = put_object("c.csv", b"\na,b\n\n1,2\n\n\n3,4\n")
+    result, columns, rows, _ = run(job_for(key, pattern="nothing-matches"))
+    assert (columns, rows, result.rows_total) == (["a", "b"], [["1", "2"], ["3", "4"]], 2)
+
+
+def test_rows_changed_counts_rows_whose_text_changed(run, put_object):
+    key = put_object("c.csv", b"v\nsame\nother\n")
+    # The pattern matches both rows, but replacing "same" with "same" changes nothing.
+    result, _, _, _ = run(job_for(key, pattern="same|other", replacement="same"))
+    assert (result.rows_total, result.rows_changed) == (2, 1)
 
 
 def test_no_columns_chosen_means_every_column(run, put_object):
@@ -166,7 +198,9 @@ def test_progress_only_moves_forward_and_reaches_the_end(run, put_object, monkey
     assert (result.rows_total, len(rows)) == (2000, 1000)  # read_rows was capped at 1000 here
 
 
-def test_cancel_stops_between_batches(run, put_object, monkeypatch):
+def test_the_reference_engine_stops_between_batches(run, engine, put_object, monkeypatch):
+    if not isinstance(engine, StreamingEngine):
+        pytest.skip("Spark's cancel path has its own test")
     monkeypatch.setattr(streaming_engine, "BATCH_ROWS", 100)
     body = b"id\n" + b"".join(b"%d\n" % n for n in range(1000))
     checks = []
@@ -194,7 +228,7 @@ def test_excel_files_are_read_as_text(run, put_object):
     assert columns == ["id", "email", "joined"]
     assert rows == [["1", "REDACTED", "2024-03-12 00:00:00"], ["2", None, "unknown"]]
     assert result.rows_total == 2
-    assert {stage for _, stage in reports} == {"Downloading", "Transforming"}
+    assert "Downloading" in {stage for _, stage in reports}
 
 
 def test_an_oversized_excel_file_is_refused_before_downloading(run, put_object, monkeypatch):
