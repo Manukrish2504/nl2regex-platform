@@ -15,10 +15,15 @@ jobs:
       - uses: actions/checkout@v7
       # setup-uv publishes full version tags only; there is no moving "v10" tag.
       - uses: astral-sh/setup-uv@v10.1.0
+      # The Spark engine's tests start a JVM. Java 17 is what the image runs.
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 17
       - run: uv sync --frozen
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      # Needs no services: tests use in-memory caches and a fake S3.
+      # Needs no services: tests use in-memory caches, a fake S3 and Spark in local mode.
       - run: uv run pytest
 
   frontend:
