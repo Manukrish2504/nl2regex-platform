@@ -85,7 +85,7 @@ if os.environ.get("SPARK_CORES_MAX"):
 # Turns a plain-English request into a pattern. Without a key that mode is switched off and the
 # rest of the application works as before. The model was chosen by scripts/eval_prompts.py.
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-LLM_MODEL = os.environ.get("LLM_MODEL", "claude-sonnet-5")
+LLM_MODEL = os.environ.get("LLM_MODEL", "claude-opus-5")
 LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "20"))
 PATTERN_CACHE_TTL = 30 * 24 * 60 * 60
 

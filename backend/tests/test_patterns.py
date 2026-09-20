@@ -64,10 +64,11 @@ def test_a_different_request_is_a_different_entry():
     ("bad", "reason"),
     [
         (suggestion(r"[a-z"), "unterminated character set"),
-        (suggestion(""), "it is empty"),
+        (suggestion(""), "The pattern is empty."),
         (suggestion(r"(?P<user>\S+)@\S+"), "Java's regex engine does not accept"),
         (suggestion(r"\d+", should_match=["a@x.com"]), "it finds nothing in 'a@x.com'"),
-        (suggestion(r"\S+", should_not_match=["nothing"]), "it matches 'nothing'"),
+        # What matched is quoted: usually a valid match inside a longer string.
+        (suggestion(r"\d+", ["12"], ["a1b"]), "it matches '1' in 'a1b'"),
     ],
 )
 def test_a_pattern_that_fails_a_check_is_sent_back_with_the_reason(bad, reason):

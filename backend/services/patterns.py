@@ -3,7 +3,7 @@
 import logging
 import re
 
-from domain.errors import DomainError, InvalidPattern, PatternNotVerified
+from domain.errors import DomainError, PatternNotVerified
 from domain.patterns import PatternSuggestion, Rejection
 from domain.ports import PatternCache, PatternProbe, PatternWriter
 
@@ -51,9 +51,9 @@ class PatternService:
             suggestion = self._writer.write(request, rejected)
             try:
                 self._verify(suggestion)
-            except DomainError as refusal:
-                logger.info("A written pattern was refused: %s", refusal.code)
-                rejected = Rejection(suggestion.pattern, refusal.message)
+            except _Refused as refusal:
+                logger.info("A written pattern was refused: %s", refusal.reason[:60])
+                rejected = Rejection(suggestion.pattern, refusal.reason)
                 continue
             self._cache.put(key, suggestion)
             return suggestion, False
@@ -70,20 +70,40 @@ class PatternService:
 
     def _verify(self, suggestion: PatternSuggestion) -> None:
         if not suggestion.pattern:
-            raise InvalidPattern("it is empty")
+            raise _Refused("The pattern is empty.")
         try:
             compiled = re.compile(suggestion.pattern)
         except re.error as error:
-            raise InvalidPattern(str(error)) from error
+            raise _Refused(f"It is not a valid regular expression: {error}.") from error
         for syntax, name in _PYTHON_ONLY.items():
             if syntax in suggestion.pattern:
-                raise InvalidPattern(f"it uses {name}, which Java's regex engine does not accept")
+                raise _Refused(f"It uses {name}, which Java's regex engine does not accept.")
 
-        missed = [text for text in suggestion.should_match if not compiled.search(text)]
-        if missed:
-            raise InvalidPattern(f"it finds nothing in {missed[0]!r}, which it was meant to match")
-        wrong = [text for text in suggestion.should_not_match if compiled.search(text)]
-        if wrong:
-            raise InvalidPattern(f"it matches {wrong[0]!r}, which it was meant to leave alone")
+        # The model's own test cases. What matched is quoted, because the usual cause is a valid
+        # match sitting inside a longer string that was meant to be left alone.
+        problems = [
+            f"it finds nothing in {text!r}, which it was meant to match"
+            for text in suggestion.should_match
+            if not compiled.search(text)
+        ] + [
+            f"it matches {found.group()!r} in {text!r}, which it was meant to leave alone"
+            for text in suggestion.should_not_match
+            if (found := compiled.search(text))
+        ]
+        if problems:
+            raise _Refused(
+                f"The pattern disagrees with its own examples: {'; '.join(problems[:3])}."
+            )
 
-        self._probe.check(suggestion.pattern)
+        try:
+            self._probe.check(suggestion.pattern)
+        except DomainError as unsafe:
+            raise _Refused(unsafe.message) from unsafe
+
+
+class _Refused(Exception):
+    """A written pattern failed a check. The reason is a sentence for the model and the user."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
