@@ -7,8 +7,8 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from domain.errors import ColumnNotFound, FileUnreadable
-from domain.tables import Row
+from domain.errors import FileUnreadable
+from domain.tables import Row, column_indexes
 
 # An .xlsx is a zip archive that must be downloaded whole before a single row can be read.
 EXCEL_MAX_BYTES = 200 * 1024 * 1024
@@ -100,27 +100,5 @@ def fit(row: Row, width: int) -> Row:
     return row[:width] + [None] * (width - len(row))
 
 
-def target_indexes(header: list[str], wanted: list[str]) -> list[int]:
-    """Positions of the wanted columns. An empty request means every column.
-
-    An exact name wins. Failing that, case, spaces, underscores and hyphens are ignored, so a
-    request that says "the email column" finds `Email`, and "first name" finds `First_Name`. A
-    name that still matches nothing fails the job; it never quietly means "every column".
-    """
-    if not wanted:
-        return list(range(len(header)))
-    loosely = {_loose(name): index for index, name in reversed(list(enumerate(header)))}
-    indexes, missing = [], []
-    for name in wanted:
-        index = header.index(name) if name in header else loosely.get(_loose(name))
-        if index is None:
-            missing.append(name)
-        elif index not in indexes:
-            indexes.append(index)
-    if missing:
-        raise ColumnNotFound(missing)
-    return indexes
-
-
-def _loose(name: str) -> str:
-    return "".join(character for character in name.casefold() if character not in " _-")
+# Column names are matched the same way everywhere, so the rule lives in the domain.
+target_indexes = column_indexes

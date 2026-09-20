@@ -16,6 +16,8 @@ class JobRecord(models.Model):
     prompt = models.TextField(null=True)
     explanation = models.TextField(null=True)
     pattern_source = models.CharField(max_length=8, default="user")
+    kind = models.CharField(max_length=16, default="replace")
+    report = models.JSONField(null=True)
     status = models.CharField(max_length=16)
     progress = models.PositiveSmallIntegerField(default=0)
     stage = models.CharField(max_length=300, blank=True)

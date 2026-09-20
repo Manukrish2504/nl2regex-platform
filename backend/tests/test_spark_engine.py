@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 
 import pytest
+from fakes import run_replace
 from test_engines import EMAIL, job_for
 
 from domain import errors
@@ -18,6 +19,15 @@ from infrastructure.streaming_engine import StreamingEngine
 spark_engine = pytest.importorskip("infrastructure.spark_engine")
 
 HEADER = ["id", "name", "email", "phone", "country", "signup_date", "notes"]
+UNSPLIT = "unsplit (cells contain line breaks)"
+
+
+def spark(tmp_path, bucket_mirror=None):
+    return spark_engine.SparkEngine(
+        "local[2]",
+        staging_dir=tmp_path / "staging",
+        source_root=bucket_mirror.as_uri() if bucket_mirror else None,
+    )
 
 
 def _sample_rows(count):
@@ -41,19 +51,16 @@ def both(spark_session, connection, bucket_mirror, tmp_path):
 
     def run(job, limit=100_000):
         outcomes, reports = [], []
-        engines = {
-            "reference": StreamingEngine(),
-            "spark": spark_engine.SparkEngine("local[2]", source_root=bucket_mirror.as_uri()),
-        }
+        engines = {"reference": StreamingEngine(), "spark": spark(tmp_path, bucket_mirror)}
         for name, engine in engines.items():
             store = ParquetResultStore(tmp_path / name)
             seen = reports if name == "spark" else []
-            result = engine.run(
+            result = run_replace(
+                engine,
                 job,
                 connection,
                 store.path_for(job.id),
                 lambda fraction, stage, seen=seen: seen.append((fraction, stage)),
-                lambda: False,
             )
             outcomes.append((result, *store.read_rows(job.id, 0, limit)))
         return outcomes, reports
@@ -121,7 +128,7 @@ def test_cells_with_line_breaks_are_detected_and_read_again_unsplit(both, put_ob
 
     assert spark[2] == reference[2]
     assert spark[0].rows_total == reference[0].rows_total
-    assert any(stage.startswith(spark_engine._UNSPLIT_STAGE) for _, stage in reports)
+    assert any(UNSPLIT in stage for _, stage in reports)
 
 
 def test_a_file_without_line_breaks_in_cells_is_read_once(both, put_object):
@@ -129,7 +136,7 @@ def test_a_file_without_line_breaks_in_cells_is_read_once(both, put_object):
     (reference, spark), reports = both(job_for(put_object("c.csv", body), pattern="nothing"))
 
     assert spark[2] == reference[2]
-    assert not any(stage.startswith(spark_engine._UNSPLIT_STAGE) for _, stage in reports)
+    assert not any(UNSPLIT in stage for _, stage in reports)
 
 
 def test_a_false_alarm_costs_a_second_pass_but_not_correctness(both, put_object):
@@ -137,19 +144,17 @@ def test_a_false_alarm_costs_a_second_pass_but_not_correctness(both, put_object)
     (reference, spark), reports = both(job_for(put_object("c.csv", body), pattern="pipe"))
 
     assert spark[2] == reference[2] == [["1", '5" REDACTED']]
-    assert any(stage.startswith(spark_engine._UNSPLIT_STAGE) for _, stage in reports)
+    assert any(UNSPLIT in stage for _, stage in reports)
 
 
 def test_a_pattern_java_rejects_fails_with_a_clear_message(
-    spark_session, connection, put_object, tmp_path
+    spark_session, connection, put_object, bucket_mirror, tmp_path
 ):
     key = put_object("c.csv", b"a\n1\n")
     # A named group in Python's spelling: valid at submit, invalid in the JVM.
     job = job_for(key, pattern=r"(?P<user>\w+)@")
     with pytest.raises(errors.InvalidPattern, match="Java's regex dialect.*Unknown inline"):
-        spark_engine.SparkEngine("local[2]").run(
-            job, connection, tmp_path / "out", lambda _f, _s: None, lambda: False
-        )
+        run_replace(spark(tmp_path, bucket_mirror), job, connection, tmp_path / "out")
 
 
 def test_column_names_need_no_quoting(both, put_object):
@@ -171,14 +176,11 @@ def test_glob_characters_in_a_key_are_read_literally(both, put_object):
 def test_a_key_hadoop_cannot_parse_is_refused_before_spark_starts(connection, put_object, tmp_path):
     key = put_object("exports/2024-01-01T10:00:00 [v1].csv", b"email\na@x.com\n")
     with pytest.raises(errors.FileUnreadable, match="Rename the file"):
-        spark_engine.SparkEngine("local[2]").run(
-            job_for(key), connection, tmp_path / "out", lambda _f, _s: None, lambda: False
-        )
+        run_replace(spark(tmp_path), job_for(key), connection, tmp_path / "out")
 
 
 def test_cancel_stops_the_spark_job(spark_session, connection, put_object, bucket_mirror, tmp_path):
     key = put_object("customers.csv", _csv(_sample_rows(20_000)))
-    engine = spark_engine.SparkEngine("local[2]", source_root=bucket_mirror.as_uri())
     checks = []
 
     def cancel_once_spark_is_running():
@@ -186,12 +188,12 @@ def test_cancel_stops_the_spark_job(spark_session, connection, put_object, bucke
         return len(checks) > 1  # the first check is before Spark starts
 
     with pytest.raises(JobCancelled):
-        engine.run(
+        run_replace(
+            spark(tmp_path, bucket_mirror),
             job_for(key),
             connection,
             tmp_path / "out" / "job",
-            lambda _f, _s: None,
-            cancel_once_spark_is_running,
+            should_cancel=cancel_once_spark_is_running,
         )
 
 
@@ -244,3 +246,55 @@ def test_an_unknown_java_failure_is_left_alone():
 def test_loggers_that_would_print_keys_at_debug_are_pinned():
     for name in ("boto3", "botocore", "urllib3", "py4j"):
         assert logging.getLogger(name).getEffectiveLevel() >= logging.WARNING
+
+
+def test_both_engines_agree_on_several_operations_and_on_a_mapping(
+    spark_session, connection, put_object, bucket_mirror, tmp_path
+):
+    from domain.operations import MapValues, MaskCells, Replace
+    from services.pii import PATTERNS
+
+    key = put_object("customers.csv", _csv(_sample_rows(3000)))
+    operations = [
+        Replace(PATTERNS["email"][1], "[EMAIL]", ["email", "notes"]),
+        Replace(PATTERNS["phone"][1], "[PHONE]", ["phone", "notes"]),
+        MaskCells("[NAME]", ["name"]),
+        MapValues("country", {"USA": "United States", "us": "United States", "AUS": "Australia"}),
+    ]
+    outcomes = {}
+    for name, engine in {
+        "reference": StreamingEngine(),
+        "spark": spark(tmp_path, bucket_mirror),
+    }.items():
+        store = ParquetResultStore(tmp_path / name)
+        with engine.open(job_for(key), connection, lambda *_: None, lambda: False) as file:
+            counts = file.distinct_values("country", 50, lambda *_: None)
+            result = file.rewrite(operations, store.path_for("job"), lambda *_: None)
+        outcomes[name] = (counts, result, store.read_rows("job", 0, 5000)[1])
+
+    assert outcomes["spark"] == outcomes["reference"]
+    counts, result, rows = outcomes["spark"]
+    assert all(changed > 0 for changed in result.changed_by_operation)
+    assert not any("@" in (row[2] or "") for row in rows)  # no e-mail address survived
+
+
+def _recorder(stages):
+    return lambda _fraction, stage: stages.append(stage)
+
+
+def test_counting_values_notices_cells_split_over_lines(
+    spark_session, connection, put_object, bucket_mirror, tmp_path
+):
+    body = b'id,notes,country\n1,"line one\nline two",USA\n2,plain,us\n3,"a\nb",USA\n'
+    key = put_object("c.csv", body)
+    seen = {}
+    for name, engine in {
+        "reference": StreamingEngine(),
+        "spark": spark(tmp_path, bucket_mirror),
+    }.items():
+        stages = seen[name + " stages"] = []
+        with engine.open(job_for(key), connection, lambda *_: None, lambda: False) as file:
+            seen[name] = file.distinct_values("country", 10, _recorder(stages))
+
+    assert seen["spark"] == seen["reference"] == [("USA", 2), ("us", 1)]
+    assert any(UNSPLIT in stage for stage in seen["spark stages"])

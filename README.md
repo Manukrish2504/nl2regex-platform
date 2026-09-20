@@ -11,7 +11,9 @@ asynchronously via Celery.
 > Work in progress. So far, end to end: connect your S3 bucket, choose a file, preview it, describe
 > what to find in plain English (or type a regex), and an asynchronous job has Claude write and
 > check the pattern and PySpark rewrite the file, with live progress, cancellation, retries and
-> paginated results. The deployment URL and the demo video land here as the build progresses.
+> paginated results. Two more transformations run through the same pipeline: redacting personal
+> data automatically, and standardising a messy column. The deployment URL and the demo video
+> land here as the build progresses.
 
 ## Run
 
@@ -69,7 +71,7 @@ milliseconds. A Celery worker does the work and the browser polls.
 
 | Endpoint | Behaviour |
 |---|---|
-| `POST /api/jobs/` | Body `{file_key, replacement, columns}` plus either `pattern` or `prompt`. `202` with the job. Rate limited. |
+| `POST /api/jobs/` | Body `{file_key, replacement, columns}` plus either `pattern` or `prompt`. `kind` selects the transformation: `replace` (the default), `redact_pii`, or `standardise` (exactly one column, and `prompt` as an optional instruction). `202` with the job. Rate limited. |
 | `GET /api/jobs/` · `GET /api/jobs/{id}/` | This connection's jobs: status, progress, stage, error, row counts. |
 | `POST /api/jobs/{id}/cancel/` | A queued job is cancelled at once. A running one has its Spark job cancelled, within a second. |
 | `GET /api/jobs/{id}/rows/?page=&page_size=` | One page of the result. `409` until the job succeeds. |
@@ -107,6 +109,8 @@ milliseconds. A Celery worker does the work and the browser polls.
 | Claude is unreachable, rate limited or overloaded | The SDK retries twice, then the job takes the retry path in the first row and ends as `llm_unavailable`. |
 | The request is not about finding anything ("what is the weather today") | The job fails as `pattern_not_understood`, with Claude's own reason. |
 | Claude cannot write a pattern that passes the checks in three attempts | The job fails as `pattern_not_verified` and says which check failed. A wrong pattern is never run. |
+| A column chosen for standardising is not a set of categories | `not_categorical`, after the counting pass and before anything is sent to Claude. |
+| Claude finds no personal data, or the values are already consistent | `nothing_to_change`, with a plain message. No copy of the file is written for nothing. |
 | A Spark worker dies mid-job | Spark reschedules its tasks on the workers that are left. Checked by killing one of two worker containers at 25%: the job succeeded on its first attempt with the same row counts, in 22 s instead of 16 s. |
 | The Spark master cannot be reached | The driver gives up after a minute, the job shows "Retrying: The processing cluster could not be reached", and after three attempts it fails with `engine_unavailable`. Workers re-register by themselves when the master returns. |
 
@@ -168,6 +172,74 @@ a second of latency matters more than the last request in forty. Sonnet's one mi
 as `pattern_not_verified`. The same script is how the instructions were improved: a first version
 scored 32 and 35 out of 39 on Sonnet and Opus, and its failures showed why (a `\b` placed next to
 `(` or `$`, and negative examples that contained a valid match inside them).
+
+### Two more transformations: redact personal data, standardise a column
+
+The brief asks for two more LLM transformations "through the same async/Spark pipeline". Both are
+the same kind of job as a find-and-replace: `202` at once, a Celery task, one Spark application,
+progress, cancel, retries, takeover, paged results. Both obey one rule:
+
+> **Claude is never called per row, and never sees rows in bulk.** It works on something the size
+> of the *schema* or of a column's *distinct values*. Spark does the work that is the size of the
+> *data*. A model call per row on ten million rows would take days and cost thousands of dollars.
+
+**Redact personal data** (`kind: redact_pii`). No pattern and no sentence. Claude says which
+columns hold personal data and of what kind, and Spark masks it with typed placeholders.
+
+- **Claude is shown shapes, never values.** Every letter becomes `a` and every digit `9`:
+  `john.doe@example.com` is sent as `aaaa.aaa@aaaaaaa.aaa`, and `+1 (632) 132-1488` as
+  `+9 (999) 999-9999`. Punctuation and length are what make an e-mail address or a phone number
+  recognisable, and they identify nobody. A test replaces the network at the wire and checks that
+  no word of any sampled value is in the request.
+- **Whole-value shapes miss what is buried in free text,** where every sentence has a shape of
+  its own. So the shapes of the non-word *tokens* inside values are sent too, which is how
+  `aaaa99@aaaa.aa` shows up for a `notes` column. Near-identical shapes share a place, so that
+  e-mail addresses of forty different lengths do not crowd out the phone numbers beside them.
+  Both were found by trying it: the first version missed the e-mails in `notes`, the second the
+  phone numbers.
+- **Claude classifies; our patterns redact.** For e-mail, phone, SSN, card number, IP address and
+  URL the regex comes from a small library, each pattern tested and run through the safety probe.
+  A name cannot be found by a regex, so a column classified as names is masked cell by cell. For
+  anything else Claude may write a pattern, and it goes through the same checks as any other.
+- On the 100,000-row sample: `name`, `email` and `phone` were found, `notes` was flagged for the
+  e-mail addresses and the phone numbers inside it, and `id`, `country` and `signup_date` were
+  left alone. The job page reports each operation with the rows it changed.
+
+**Standardise a column** (`kind: standardise`). `USA`, `U.S.`, `us` and `United States` become one
+value. A regex cannot do this: knowing that `Deutschland` is `Germany` is knowledge.
+
+```
+pass 1  groupBy(column).count()      the project's one shuffle, and a small one: counts are combined
+                                     on each partition first, so at most (values x partitions) rows move
+        Claude maps each spelling    one call, on a few hundred strings
+pass 2  broadcast join, map-only     the mapping is copied to every executor; the file's rows are
+                                     never shuffled to meet it, and they keep their order
+```
+
+- **Claude is sent the distinct values of the one column you chose,** and the UI says so first.
+  A column with more than 300 values, or values longer than 60 characters, is not a set of
+  categories. It is names or e-mail addresses, and the job refuses it *before anything is sent*.
+  The limit is a privacy guard first and a cost guard second.
+- **The answer is not trusted.** A key Claude invented is dropped, as is an entry that changes
+  nothing. Blanks stay blank, and values outside the mapping stay as they are.
+- A broadcast join, not a literal map expression: a map literal is scanned key by key for every
+  row, while the join is one hash lookup. The file is read from S3 twice, because caching ten
+  million rows in executor memory to avoid that would cost more than it saves.
+- On the sample: 13 spellings of 5 countries became 5 values, and the report's row counts, which
+  come free from pass 1, add up to exactly the 57,370 rows that pass 2 changed.
+
+Both answers are cached in Redis under a hash of exactly what was sent. Checked on the stack: a
+repeated job, and a job taken over after `kill -9`, made no second call to Claude.
+
+**One engine change serves all three.** An engine used to `run(job)`. It now opens the file for
+the length of the job and returns something that can `sample()` the first rows, count
+`distinct_values(column)`, and `rewrite(operations)`, where an operation is `Replace`, `MaskCells`
+or `MapValues`. A find-and-replace job is simply `[Replace(...)]`. One Spark application still
+serves the whole job, and it starts at the first pass, so a job does not hold cluster cores while
+Claude is thinking. The reference engine implements the same interface, so every case still runs
+on both, and that is what caught a real bug: given positional `?` parameters, PySpark 4.1 bound
+the lookup table's values in reverse, which turned `AUS → Australia` into `us → AUS` without any
+error. The values are now bound by name.
 
 ### What runs where
 

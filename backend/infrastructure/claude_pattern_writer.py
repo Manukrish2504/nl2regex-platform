@@ -1,20 +1,10 @@
 """Asks Claude to write the pattern. The request is the only thing it is ever sent."""
 
-import logging
-import time
-
-import anthropic
 import pydantic
 
-from domain.errors import (
-    LLMNotConfigured,
-    LLMRejectedRequest,
-    LLMUnavailable,
-    PatternNotUnderstood,
-)
+from domain.errors import LLMNotConfigured, PatternNotUnderstood
 from domain.patterns import PatternSuggestion, Rejection
-
-logger = logging.getLogger(__name__)
+from infrastructure import claude_api
 
 # Part of the cache key. Raise it whenever the instructions below change what Claude would answer.
 INSTRUCTIONS_VERSION = 2
@@ -46,8 +36,7 @@ Your pattern will be run against both lists, and an answer whose pattern disagre
 
 
 class _Answer(pydantic.BaseModel):
-    """The shape Claude must answer in. Decoding is constrained to it, so a regex arrives with
-    its backslashes intact, which asking for "JSON with a regex in it" does not guarantee."""
+    """The shape Claude must answer in."""
 
     understood: bool
     reason: str
@@ -63,47 +52,20 @@ class ClaudePatternWriter:
     is_configured = True
 
     def __init__(self, api_key: str, model: str, timeout: float):
-        self._client = anthropic.Anthropic(api_key=api_key, timeout=timeout, max_retries=2)
+        self._client = claude_api.client(api_key, timeout)
         self._model = model
 
     def write(self, request: str, rejected: Rejection | None = None) -> PatternSuggestion:
         content = request
+        task = "pattern"
         if rejected is not None:
+            task = "pattern-retry"
             content += (
                 f"\n\nAn earlier answer was refused. Its pattern was {rejected.pattern!r}. "
                 f"{rejected.reason} Either the pattern or an example was wrong. Answer again, "
                 "with a pattern that agrees with every one of its examples."
             )
-        started = time.monotonic()
-        try:
-            message = self._client.messages.parse(
-                model=self._model,
-                max_tokens=2048,
-                system=INSTRUCTIONS,
-                messages=[{"role": "user", "content": content}],
-                output_format=_Answer,
-                # The task needs no deliberation, and thinking triples the wait.
-                thinking={"type": "disabled"},
-            )
-        except anthropic.APIStatusError as error:
-            if error.status_code == 429 or error.status_code >= 500:
-                raise LLMUnavailable() from error
-            # A bad key, no credit, an unknown model: nothing the user can fix, so it is logged
-            # for the operator. The status and type only: never the request, never the key.
-            logger.error("Claude refused a request: %s %s", error.status_code, type(error).__name__)
-            raise LLMRejectedRequest() from error
-        except anthropic.APIConnectionError as error:  # includes timeouts
-            raise LLMUnavailable() from error
-
-        logger.info(
-            "Claude wrote a pattern: model=%s seconds=%.1f tokens_in=%s tokens_out=%s retry=%s",
-            self._model,
-            time.monotonic() - started,
-            message.usage.input_tokens,
-            message.usage.output_tokens,
-            rejected is not None,
-        )
-        answer = message.parsed_output
+        answer = claude_api.ask(self._client, self._model, task, INSTRUCTIONS, content, _Answer)
         if answer is None:  # it stopped without a complete answer, which is a refusal in practice
             raise PatternNotUnderstood("the language model declined to answer.")
         if not answer.understood:

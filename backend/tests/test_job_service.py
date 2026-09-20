@@ -2,24 +2,31 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fakes import (
+    FakeAdviceCache,
+    FakeClassifier,
     FakeEngine,
     FakeJobs,
     FakePatternCache,
     FakeProbe,
     FakeQueue,
     FakeResults,
+    FakeStandardiser,
     FakeStorage,
     FakeVault,
     FakeWriter,
 )
 
 from domain import errors
+from domain.advice import Finding
 from domain.connections import S3Credentials
 from domain.jobs import JobCancelled, JobStatus, RetryLater, TransformResult
+from domain.operations import MapValues, MaskCells
 from domain.patterns import PatternSuggestion
 from services.connections import ConnectionService
 from services.jobs import JobService
 from services.patterns import PatternService
+from services.pii import PiiService
+from services.standardise import StandardiseService
 
 CREDENTIALS = S3Credentials("AKIAEXAMPLEEXAMPLE00", "not-a-real-secret-key")
 START = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
@@ -28,20 +35,33 @@ START = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
 class World:
     """One service wired to fakes, plus a connected browser token."""
 
-    def __init__(self, engine=None, results=None, writer=None, probe=None):
+    def __init__(
+        self,
+        engine=None,
+        results=None,
+        writer=None,
+        probe=None,
+        classifier=None,
+        standardiser=None,
+    ):
         self.clock = START
         self.vault = FakeVault()
         self.connections = ConnectionService(FakeStorage(), self.vault)
         self.jobs, self.queue = FakeJobs(), FakeQueue()
         self.engine, self.results = engine or FakeEngine(), results or FakeResults()
         self.writer, self.probe = writer or FakeWriter(), probe or FakeProbe()
+        self.classifier = classifier or FakeClassifier()
+        self.standardiser = standardiser or FakeStandardiser()
+        patterns = PatternService(self.writer, FakePatternCache(), self.probe)
         self.service = JobService(
             self.connections,
             self.jobs,
             self.queue,
             self.engine,
             self.results,
-            PatternService(self.writer, FakePatternCache(), self.probe),
+            patterns,
+            PiiService(self.classifier, FakeAdviceCache(), patterns),
+            StandardiseService(self.standardiser, FakeAdviceCache()),
             max_active_jobs=3,
             max_attempts=3,
             stale_after=timedelta(minutes=17),
@@ -145,9 +165,11 @@ def test_progress_is_persisted_while_running():
     world.engine.during = lambda job, _cancel: seen.append(world.jobs.get(job.id))
     world.service.run(world.submit().id)
 
+    # The engine said "half way through rewriting". Opening the file is the first 5% of the
+    # job, so half of the rest puts the job at 52%.
     assert (seen[0].status, seen[0].progress, seen[0].stage) == (
         JobStatus.RUNNING,
-        50,
+        52,
         "Transforming",
     )
 
@@ -287,7 +309,7 @@ def test_cancelling_a_running_job_asks_the_engine_to_stop():
 
     cancelled = world.jobs.get(job.id)
     assert cancelled.status is JobStatus.CANCELLED
-    assert cancelled.progress == 50  # how far it got, not reset to zero
+    assert cancelled.progress == 52  # how far it got, not reset to zero
     assert job.id in world.results.deleted
 
 
@@ -490,3 +512,80 @@ def test_a_prompt_is_refused_at_once_when_no_language_model_is_configured():
     with pytest.raises(errors.LLMNotConfigured):
         world.submit(**REQUEST)
     assert world.queue.jobs == []
+
+
+# --- the two transformations a language model plans -------------------------------------------
+
+PEOPLE = [["1", "John Doe", "USA"], ["2", "Jane Smith", "us"]]
+
+
+def test_redacting_personal_data_plans_from_a_sample_and_reports_what_it_did():
+    engine = FakeEngine(
+        columns=["id", "name", "country"],
+        rows=PEOPLE,
+        result=TransformResult(rows_total=2, rows_changed=2, changed_by_operation=[2]),
+    )
+    world = World(engine=engine, classifier=FakeClassifier([Finding("name", "name", "names")]))
+    job = world.submit(kind="redact_pii", pattern="", replacement="", columns=[])
+    seen = {}
+    engine.during = lambda running, _cancel: seen.update(report=world.jobs.get(running.id).report)
+    world.service.run(job.id)
+
+    assert engine.operations == [MaskCells("[NAME]", ["name"])]
+    # The model saw shapes of the sampled rows, not the rows.
+    assert world.classifier.calls[0][1].shapes == ["Aaaa Aaa"]
+    assert seen["report"]["findings"][0]["column"] == "name"  # on the page while Spark works
+    done = world.jobs.get(job.id)
+    assert done.status is JobStatus.SUCCESS
+    assert done.report["operations"] == [
+        {"kind": "name", "placeholder": "[NAME]", "columns": ["name"], "rows_changed": 2}
+    ]
+
+
+def test_standardising_counts_the_values_first_and_then_maps_them():
+    engine = FakeEngine(
+        columns=["id", "name", "country"],
+        counts=[("USA", 40), ("us", 30), (None, 5)],
+        result=TransformResult(rows_total=75, rows_changed=30, changed_by_operation=[30]),
+    )
+    world = World(engine=engine, standardiser=FakeStandardiser([("us", "USA")]))
+    job = world.submit(
+        kind="standardise", pattern="", replacement="", columns=["country"], prompt="prefer USA"
+    )
+    world.service.run(job.id)
+
+    assert world.standardiser.calls == [("country", ["USA", "us"], "prefer USA")]
+    assert engine.operations == [MapValues("country", {"us": "USA"})]
+    done = world.jobs.get(job.id)
+    assert (done.status, done.rows_changed) == (JobStatus.SUCCESS, 30)
+    assert done.report["mapping"] == [{"from": "us", "to": "USA", "rows": 30}]
+
+
+def test_a_column_with_too_many_values_fails_the_job_before_the_model_is_asked():
+    engine = FakeEngine(columns=["email"], counts=[(f"user{n}@x.com", 1) for n in range(400)])
+    world = World(engine=engine)
+    job = world.submit(kind="standardise", pattern="", replacement="", columns=["email"])
+    world.service.run(job.id)
+
+    failed = world.jobs.get(job.id)
+    assert (failed.status, failed.error_code) == (JobStatus.FAILED, "not_categorical")
+    assert world.standardiser.calls == [] and engine.runs == 0
+
+
+def test_nothing_to_redact_ends_the_job_with_a_plain_message():
+    world = World(engine=FakeEngine(rows=[["1", "a@x.com"]]), classifier=FakeClassifier([]))
+    job = world.submit(kind="redact_pii", pattern="", replacement="", columns=[])
+    world.service.run(job.id)
+
+    failed = world.jobs.get(job.id)
+    assert failed.error_code == "nothing_to_change"
+    assert "No personal data was found" in failed.error_message
+
+
+def test_these_kinds_need_a_language_model():
+    writer = FakeWriter()
+    writer.is_configured = False
+    world = World(writer=writer)
+    for kind, columns in (("redact_pii", []), ("standardise", ["country"])):
+        with pytest.raises(errors.LLMNotConfigured):
+            world.submit(kind=kind, pattern="", replacement="", columns=columns)

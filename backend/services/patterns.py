@@ -50,8 +50,8 @@ class PatternService:
         for _ in range(self._max_attempts):
             suggestion = self._writer.write(request, rejected)
             try:
-                self._verify(suggestion)
-            except _Refused as refusal:
+                self.verify(suggestion)
+            except Refused as refusal:
                 logger.info("A written pattern was refused: %s", refusal.reason[:60])
                 rejected = Rejection(suggestion.pattern, refusal.reason)
                 continue
@@ -68,16 +68,17 @@ class PatternService:
         """For a pattern the user typed. It compiled when it was submitted; is it safe to run?"""
         self._probe.check(pattern)
 
-    def _verify(self, suggestion: PatternSuggestion) -> None:
+    def verify(self, suggestion: PatternSuggestion) -> None:
+        """Raises Refused, with a reason, unless the pattern passes every check."""
         if not suggestion.pattern:
-            raise _Refused("The pattern is empty.")
+            raise Refused("The pattern is empty.")
         try:
             compiled = re.compile(suggestion.pattern)
         except re.error as error:
-            raise _Refused(f"It is not a valid regular expression: {error}.") from error
+            raise Refused(f"It is not a valid regular expression: {error}.") from error
         for syntax, name in _PYTHON_ONLY.items():
             if syntax in suggestion.pattern:
-                raise _Refused(f"It uses {name}, which Java's regex engine does not accept.")
+                raise Refused(f"It uses {name}, which Java's regex engine does not accept.")
 
         # The model's own test cases. What matched is quoted, because the usual cause is a valid
         # match sitting inside a longer string that was meant to be left alone.
@@ -91,17 +92,17 @@ class PatternService:
             if (found := compiled.search(text))
         ]
         if problems:
-            raise _Refused(
+            raise Refused(
                 f"The pattern disagrees with its own examples: {'; '.join(problems[:3])}."
             )
 
         try:
             self._probe.check(suggestion.pattern)
         except DomainError as unsafe:
-            raise _Refused(unsafe.message) from unsafe
+            raise Refused(unsafe.message) from unsafe
 
 
-class _Refused(Exception):
+class Refused(Exception):
     """A written pattern failed a check. The reason is a sentence for the model and the user."""
 
     def __init__(self, reason: str):

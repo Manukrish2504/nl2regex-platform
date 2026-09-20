@@ -18,7 +18,9 @@ from infrastructure.s3_storage import S3Storage
 from services.connections import ConnectionService
 from services.jobs import JobService
 from services.patterns import PatternService
+from services.pii import PiiService
 from services.previews import PreviewService
+from services.standardise import StandardiseService
 
 
 @cache
@@ -44,6 +46,7 @@ def _engine():
 
     return SparkEngine(
         master=settings.SPARK_MASTER_URL,
+        staging_dir=settings.RESULTS_DIR,
         conf=settings.SPARK_CONF,
         s3_endpoint=settings.S3_ENDPOINT_URL,
     )
@@ -75,6 +78,36 @@ def pattern_service() -> PatternService:
     )
 
 
+def _data_advisers():
+    """The adapters that ask a language model about a file, and the cache in front of them."""
+    from infrastructure import claude_data_advisers as advisers
+    from infrastructure.pattern_cache import CacheAdviceStore
+
+    cache_store = CacheAdviceStore(
+        namespace=f"{settings.LLM_MODEL}:v{advisers.INSTRUCTIONS_VERSION}",
+        ttl=settings.PATTERN_CACHE_TTL,
+    )
+    # Without an API key these are never reached: submitting such a job is refused first.
+    credentials = (settings.ANTHROPIC_API_KEY, settings.LLM_MODEL, settings.LLM_TIMEOUT)
+    return (
+        advisers.ClaudePiiClassifier(*credentials),
+        advisers.ClaudeValueStandardiser(*credentials),
+        cache_store,
+    )
+
+
+@cache
+def pii_service() -> PiiService:
+    classifier, _, cache_store = _data_advisers()
+    return PiiService(classifier, cache_store, pattern_service())
+
+
+@cache
+def standardise_service() -> StandardiseService:
+    _, standardiser, cache_store = _data_advisers()
+    return StandardiseService(standardiser, cache_store)
+
+
 @cache
 def job_service() -> JobService:
     return JobService(
@@ -84,6 +117,8 @@ def job_service() -> JobService:
         engine=_engine(),
         results=ParquetResultStore(settings.RESULTS_DIR),
         patterns=pattern_service(),
+        pii=pii_service(),
+        standardiser=standardise_service(),
         max_active_jobs=settings.JOB_MAX_ACTIVE_PER_CONNECTION,
         max_attempts=settings.JOB_MAX_ATTEMPTS,
         stale_after=timedelta(seconds=settings.JOB_STALE_AFTER),

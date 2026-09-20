@@ -69,7 +69,7 @@ def test_a_permanent_failure_fails_the_job_and_is_not_retried(submit, token):
 def test_a_transient_failure_asks_celery_to_retry(submit, token):
     job = submit()
     engine = job_service()._engine
-    with patch.object(engine, "run", side_effect=errors.StorageUnreachable()):
+    with patch.object(engine, "open", side_effect=errors.StorageUnreachable()):
         with pytest.raises(Retry):
             run_job.apply(args=[job.id], throw=True)
 
@@ -79,7 +79,7 @@ def test_a_transient_failure_asks_celery_to_retry(submit, token):
 
 def test_the_soft_time_limit_fails_the_job_cleanly(submit, token):
     job = submit()
-    with patch.object(job_service()._engine, "run", side_effect=SoftTimeLimitExceeded()):
+    with patch.object(job_service()._engine, "open", side_effect=SoftTimeLimitExceeded()):
         run_job.apply(args=[job.id])
 
     failed = job_service().get(token, job.id)
@@ -88,7 +88,7 @@ def test_the_soft_time_limit_fails_the_job_cleanly(submit, token):
 
 def test_a_crash_in_our_own_code_fails_the_job_without_leaking_details(submit, token):
     job = submit()
-    with patch.object(job_service()._engine, "run", side_effect=RuntimeError("secret internals")):
+    with patch.object(job_service()._engine, "open", side_effect=RuntimeError("secret internals")):
         run_job.apply(args=[job.id])
 
     failed = job_service().get(token, job.id)
@@ -98,7 +98,7 @@ def test_a_crash_in_our_own_code_fails_the_job_without_leaking_details(submit, t
 
 def test_a_redelivered_message_takes_over_a_running_job(submit, token):
     job = submit()
-    with patch.object(job_service()._engine, "run", side_effect=SystemExit):  # the worker dies
+    with patch.object(job_service()._engine, "open", side_effect=SystemExit):  # the worker dies
         with pytest.raises(SystemExit):
             run_job.apply(args=[job.id], throw=True)
     assert job_service().get(token, job.id).status is JobStatus.RUNNING

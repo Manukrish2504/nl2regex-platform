@@ -1,11 +1,12 @@
 """The transformation job and its lifecycle. Standard library only."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 
 from domain.connections import FileFormat
 from domain.errors import InvalidTransition
+from domain.operations import Replace
 from domain.patterns import PatternSuggestion
 
 
@@ -32,9 +33,15 @@ class Job:
     replacement: str  # always literal text, never a template with backreferences
     columns: list[str]  # empty means every column
     created_at: datetime
-    prompt: str | None = None  # the plain-English request, if the pattern was not typed
+    kind: str = "replace"  # "replace", "redact_pii" or "standardise"
+    # For "replace": the plain-English request, if the pattern was not typed.
+    # For "standardise": an optional instruction, such as "use full English country names".
+    prompt: str | None = None
     explanation: str | None = None  # what the written pattern matches, in one sentence
     pattern_source: str = "user"  # "user", "llm", or "cache" for an llm answer served again
+    # What a language model decided and what that did, for a job whose plan it made: the findings
+    # of "redact_pii", the mapping of "standardise". Plain data, shown on the job's page.
+    report: dict | None = None
     status: JobStatus = JobStatus.QUEUED
     progress: int = 0  # percent
     stage: str = "Waiting for a worker"
@@ -77,6 +84,9 @@ class Job:
             self.replacement = suggestion.replacement
         if not self.columns and suggestion.columns:
             self.columns = list(suggestion.columns)
+
+    def as_replace(self) -> Replace:
+        return Replace(self.pattern, self.replacement, list(self.columns))
 
     def start(self, now: datetime) -> None:
         """Begin an attempt. From RUNNING this is a takeover after the previous worker died."""
@@ -125,6 +135,8 @@ class Job:
 class TransformResult:
     rows_total: int
     rows_changed: int
+    # Rows each operation changed, in the order the operations were given.
+    changed_by_operation: list[int] = field(default_factory=list)
 
 
 class JobCancelled(Exception):

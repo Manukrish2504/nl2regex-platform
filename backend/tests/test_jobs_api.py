@@ -266,3 +266,63 @@ def test_a_prompt_is_refused_when_the_server_has_no_api_key(client, queue):
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "llm_not_configured"
     queue["jobs"].assert_not_called()
+
+
+# --- the transformations a language model plans ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"kind": "redact_pii", "pattern": "a"},
+        {"kind": "redact_pii", "prompt": "mask everything"},
+        {"kind": "standardise", "columns": []},
+        {"kind": "standardise", "columns": ["id", "email"]},
+        {"kind": "standardise", "columns": ["email"], "pattern": "a"},
+        {"kind": "translate", "columns": ["email"]},
+    ],
+)
+def test_each_kind_of_job_validates_its_own_fields(client, queue, language_model, body):
+    response = client.post("/api/jobs/", {"file_key": "data.csv"} | body, format="json")
+    assert response.status_code == 400
+
+
+def test_a_redaction_job_runs_end_to_end_and_the_api_shows_its_report(
+    client, queue, language_model
+):
+    from domain.advice import Finding
+
+    finding = Finding("email", "email", "its shapes are e-mail addresses")
+    with patch(
+        "infrastructure.claude_data_advisers.ClaudePiiClassifier.classify", return_value=[finding]
+    ) as classify:
+        body = {"file_key": "data.csv", "kind": "redact_pii"}
+        job_id = client.post("/api/jobs/", body, format="json").json()["id"]
+        run_job.apply(args=[job_id])
+
+    job = client.get(f"/api/jobs/{job_id}/").json()
+    assert (job["status"], job["kind"], job["rows_changed"]) == ("SUCCESS", "redact_pii", 120)
+    assert job["report"]["operations"] == [
+        {"kind": "email", "placeholder": "[EMAIL]", "columns": ["email"], "rows_changed": 120}
+    ]
+    assert client.get(f"/api/jobs/{job_id}/rows/").json()["rows"][0] == ["0", "[EMAIL]"]
+    # What the model was shown: shapes. The file's addresses are user0@example.com and so on.
+    (profiles,) = classify.call_args.args
+    assert "user" not in str(profiles) and "aaaa99@aaaaaaa.aaa" in str(profiles)
+
+
+def test_a_standardise_job_runs_end_to_end(client, queue, language_model, put_object):
+    put_object("places.csv", b"id,country\n1,USA\n2,us\n3,Germany\n4,us\n")
+    with patch(
+        "infrastructure.claude_data_advisers.ClaudeValueStandardiser.standardise",
+        return_value=[("us", "USA")],
+    ):
+        body = {"file_key": "places.csv", "kind": "standardise", "columns": ["Country"]}
+        job_id = client.post("/api/jobs/", body, format="json").json()["id"]
+        run_job.apply(args=[job_id])
+
+    job = client.get(f"/api/jobs/{job_id}/").json()
+    assert (job["status"], job["rows_changed"]) == ("SUCCESS", 2)
+    assert job["report"]["mapping"] == [{"from": "us", "to": "USA", "rows": 2}]
+    rows = client.get(f"/api/jobs/{job_id}/rows/").json()["rows"]
+    assert [row[1] for row in rows] == ["USA", "USA", "Germany", "USA"]
