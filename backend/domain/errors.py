@@ -137,6 +137,20 @@ class LLMRejectedRequest(DomainError):
     message = "The language model refused the request. The server's API key needs attention."
 
 
+class NotCategorical(DomainError):
+    code = "not_categorical"
+
+    def __init__(self, reason: str):
+        super().__init__(
+            f"That column cannot be standardised: {reason} Only a column with a limited set of "
+            "values, such as a country or a status, is sent to the language model."
+        )
+
+
+class NothingToChange(DomainError):
+    code = "nothing_to_change"
+
+
 class TooManyActiveJobs(DomainError):
     code = "too_many_active_jobs"
     message = "You already have several jobs in progress. Wait for one to finish, or cancel one."

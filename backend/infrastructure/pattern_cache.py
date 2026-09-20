@@ -26,3 +26,17 @@ class CachePatternStore:
 
     def _key(self, request: str) -> str:
         return f"pattern:{self._namespace}:{hashlib.sha256(request.encode()).hexdigest()}"
+
+
+class CacheAdviceStore:
+    """The same, for the answers about a file. The key is a hash of exactly what was sent."""
+
+    def __init__(self, namespace: str, ttl: int):
+        self._namespace = namespace
+        self._ttl = ttl
+
+    def get(self, key: str) -> dict | None:
+        return cache.get(f"advice:{self._namespace}:{key}")
+
+    def put(self, key: str, advice: dict) -> None:
+        cache.set(f"advice:{self._namespace}:{key}", advice, self._ttl)

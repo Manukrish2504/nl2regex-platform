@@ -23,10 +23,20 @@ from domain.errors import (
     UnsupportedFile,
 )
 from domain.jobs import Job, JobCancelled, JobStatus, RetryLater
-from domain.ports import JobRepository, ResultStore, TaskQueue, TransformEngine
+from domain.operations import Operation
+from domain.ports import (
+    JobRepository,
+    OpenFile,
+    Progress,
+    ResultStore,
+    TaskQueue,
+    TransformEngine,
+)
 from domain.tables import Page
 from services.connections import ConnectionService
 from services.patterns import PatternService
+from services.pii import SAMPLE_ROWS, PiiService
+from services.standardise import MAX_VALUES, StandardiseService
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +57,8 @@ class JobService:
         engine: TransformEngine,
         results: ResultStore,
         patterns: PatternService,
+        pii: PiiService,
+        standardiser: StandardiseService,
         *,
         max_active_jobs: int,
         max_attempts: int,
@@ -60,6 +72,8 @@ class JobService:
         self._engine = engine
         self._results = results
         self._patterns = patterns
+        self._pii = pii
+        self._standardiser = standardiser
         self._max_active_jobs = max_active_jobs
         self._max_attempts = max_attempts
         self._stale_after = stale_after
@@ -76,18 +90,19 @@ class JobService:
         columns: list[str],
         pattern: str = "",
         prompt: str | None = None,
+        kind: str = "replace",
     ) -> Job:
         """Validate, persist as QUEUED and hand to a worker. Returns without doing the work.
 
-        The job carries either a pattern or a plain-English prompt. A prompt is turned into a
-        pattern by the worker, not here: that is a call to a language model, and no request
-        waits on one.
+        A "replace" job carries either a pattern or a plain-English prompt. A prompt is turned
+        into a pattern by the worker, not here: that is a call to a language model, and no
+        request waits on one. The other kinds always need the language model.
         """
         connection = self._connections.get(token)
         file_format = FileFormat.from_key(file_key)
         if file_format is None:
             raise UnsupportedFile()
-        if prompt:
+        if prompt or kind != "replace":
             if not self._patterns.can_write:
                 raise LLMNotConfigured()
         else:
@@ -107,8 +122,9 @@ class JobService:
             replacement=replacement,
             columns=columns,
             created_at=self._now(),
+            kind=kind,
             prompt=prompt or None,
-            pattern_source="llm" if prompt else "user",
+            pattern_source="llm" if prompt and kind == "replace" else "user",
         )
         self._jobs.add(job)
         self._queue.enqueue_job(job.id)
@@ -183,17 +199,23 @@ class JobService:
 
         self._results.purge_older_than(int(self._results_max_age.total_seconds()))
         self._results.delete(job.id)  # a clean slate, so a re-run never mixes with an old one
+        progress = self._progress_writer(job)
         try:
             connection = self._connections.get_by_id(job.connection_id)
-            if not self._settle_pattern(job):
+            if job.kind == "replace" and not self._settle_pattern(job):
                 return  # the job changed hands while its pattern was being written
-            result = self._engine.run(
-                job,
-                connection,
-                self._results.path_for(job.id),
-                on_progress=self._progress_writer(job),
-                should_cancel=self._cancel_checker(job.id),
-            )
+            # An Excel file is downloaded and converted while it is opened, which takes a while.
+            opened_at = 0.3 if job.file_format is FileFormat.EXCEL else 0.05
+            with self._engine.open(
+                job, connection, _span(progress, 0.0, opened_at), self._cancel_checker(job.id)
+            ) as opened:
+                plan = self._plan(job, opened, progress, opened_at)
+                if plan is None:
+                    return  # the job changed hands while its plan was being made
+                operations, starts_at = plan
+                result = opened.rewrite(
+                    operations, self._results.path_for(job.id), _span(progress, starts_at, 1.0)
+                )
         except JobCancelled:
             self._results.delete(job.id)
             self._change(job, lambda: job.cancel(self._now()))
@@ -209,6 +231,12 @@ class JobService:
             self._results.delete(job.id)
             self._fail(job, error.code, error.message)
         else:
+            if job.report is not None:
+                # What each operation changed, beside what was planned.
+                for described, rows in zip(
+                    job.report.get("operations", []), result.changed_by_operation, strict=False
+                ):
+                    described["rows_changed"] = rows
             changed = self._change(
                 job, lambda: job.succeed(self._now(), result.rows_total, result.rows_changed)
             )
@@ -227,6 +255,34 @@ class JobService:
             self._report(job, "Checking the pattern")
             self._patterns.check(job.pattern)  # a written pattern was checked when it was adopted
         return True
+
+    def _plan(
+        self, job: Job, opened: OpenFile, progress: Progress, opened_at: float
+    ) -> tuple[list[Operation], float] | None:
+        """The operations for this kind of job, and where on the progress bar rewriting starts.
+        None if the job was taken away while a language model was being asked."""
+        if job.kind == "replace":
+            return [job.as_replace()], opened_at
+
+        if job.kind == "redact_pii":
+            progress(opened_at, "Looking for personal data")
+            operations, report = self._pii.plan(
+                opened.columns, opened.sample(SAMPLE_ROWS), job.columns
+            )
+            rewrite_at = opened_at + 0.05
+        else:
+            (column,) = job.columns
+            # Two more than the limit: one may be the blank, and one tells "too many" from "all".
+            counts = opened.distinct_values(column, MAX_VALUES + 2, _span(progress, opened_at, 0.4))
+            progress(0.4, "Standardising the values")
+            operations, report = self._standardiser.plan(column, counts, job.prompt)
+            rewrite_at = 0.45
+
+        # Saved before the rewrite starts, so the page can show it while Spark works.
+        def adopt() -> None:
+            job.report = report
+
+        return (operations, rewrite_at) if self._change(job, adopt) else None
 
     def _report(self, job: Job, stage: str) -> None:
         job.stage = stage
@@ -298,3 +354,8 @@ class JobService:
             return last["value"]
 
         return check
+
+
+def _span(progress: Progress, start: float, end: float) -> Progress:
+    """A part of the job reports its own progress from 0 to 1; this places it on the whole."""
+    return lambda fraction, stage: progress(start + (end - start) * fraction, stage)

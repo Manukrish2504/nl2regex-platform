@@ -1,11 +1,14 @@
 """What the application needs from the outside world. Infrastructure implements these."""
 
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Protocol
 
+from domain.advice import ColumnProfile, Finding
 from domain.connections import Connection, FileFormat, FileListing, S3Credentials
 from domain.jobs import Job, JobStatus, TransformResult
+from domain.operations import Operation
 from domain.patterns import PatternSuggestion, Rejection
 from domain.tables import FilePreview, Row
 
@@ -67,20 +70,46 @@ class TaskQueue(Protocol):
     def enqueue_preview(self, connection_id: str, file_key: str) -> None: ...
 
 
+Progress = Callable[[float, str], None]  # a fraction from 0 to 1, and a short stage name
+
+
+class OpenFile(Protocol):
+    """One file, opened for one job. Everything a transformation needs from an engine.
+
+    Every method raises JobCancelled once the job's cancel request is seen, and a DomainError for
+    anything the user can fix.
+    """
+
+    columns: list[str]
+
+    def sample(self, limit: int) -> list[Row]:
+        """The first rows, without reading the rest of the file."""
+        ...
+
+    def distinct_values(
+        self, column: str, limit: int, on_progress: Progress
+    ) -> list[tuple[str | None, int]]:
+        """The column's values with how many rows hold each, most frequent first, at most `limit`.
+        A full pass over the file."""
+        ...
+
+    def rewrite(
+        self, operations: list[Operation], destination: Path, on_progress: Progress
+    ) -> TransformResult:
+        """Apply the operations, in order, and write Parquet files into `destination`."""
+        ...
+
+
 class TransformEngine(Protocol):
-    def run(
+    def open(
         self,
         job: Job,
         connection: Connection,
-        destination: Path,
-        on_progress: Callable[[float, str], None],
+        on_progress: Progress,
         should_cancel: Callable[[], bool],
-    ) -> TransformResult:
-        """Apply the job's pattern to its file and write Parquet files into `destination`.
-
-        Reports progress as a fraction from 0 to 1 with a short stage name, raises JobCancelled
-        once `should_cancel` turns true, and raises a DomainError for anything the user can fix.
-        """
+    ) -> AbstractContextManager[OpenFile]:
+        """Whatever the engine starts for a job (a Spark application, a download) lives exactly
+        as long as this context, however many passes over the file the job makes inside it."""
         ...
 
 
@@ -139,3 +168,29 @@ class PatternProbe(Protocol):
     def check(self, pattern: str) -> None:
         """Raises UnsafePattern if the pattern could take exponentially long on some input."""
         ...
+
+
+class PiiClassifier(Protocol):
+    """A language model that says which columns hold personal data. It is shown column names and
+    the shapes of values, never a value."""
+
+    def classify(self, profiles: list[ColumnProfile]) -> list[Finding]: ...
+
+
+class ValueStandardiser(Protocol):
+    """A language model that maps the spellings of one column to canonical values. It is shown
+    that column's distinct values and nothing else from the file."""
+
+    def standardise(
+        self, column: str, values: list[str], instruction: str | None
+    ) -> list[tuple[str, str]]:
+        """Pairs of (a value as it is, the value it should become)."""
+        ...
+
+
+class AdviceCache(Protocol):
+    """So that the same question about the same input is not sent to the language model twice."""
+
+    def get(self, key: str) -> dict | None: ...
+
+    def put(self, key: str, advice: dict) -> None: ...

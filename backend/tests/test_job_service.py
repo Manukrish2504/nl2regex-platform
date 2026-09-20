@@ -2,12 +2,15 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fakes import (
+    FakeAdviceCache,
+    FakeClassifier,
     FakeEngine,
     FakeJobs,
     FakePatternCache,
     FakeProbe,
     FakeQueue,
     FakeResults,
+    FakeStandardiser,
     FakeStorage,
     FakeVault,
     FakeWriter,
@@ -20,6 +23,8 @@ from domain.patterns import PatternSuggestion
 from services.connections import ConnectionService
 from services.jobs import JobService
 from services.patterns import PatternService
+from services.pii import PiiService
+from services.standardise import StandardiseService
 
 CREDENTIALS = S3Credentials("AKIAEXAMPLEEXAMPLE00", "not-a-real-secret-key")
 START = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
@@ -28,20 +33,33 @@ START = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
 class World:
     """One service wired to fakes, plus a connected browser token."""
 
-    def __init__(self, engine=None, results=None, writer=None, probe=None):
+    def __init__(
+        self,
+        engine=None,
+        results=None,
+        writer=None,
+        probe=None,
+        classifier=None,
+        standardiser=None,
+    ):
         self.clock = START
         self.vault = FakeVault()
         self.connections = ConnectionService(FakeStorage(), self.vault)
         self.jobs, self.queue = FakeJobs(), FakeQueue()
         self.engine, self.results = engine or FakeEngine(), results or FakeResults()
         self.writer, self.probe = writer or FakeWriter(), probe or FakeProbe()
+        self.classifier = classifier or FakeClassifier()
+        self.standardiser = standardiser or FakeStandardiser()
+        patterns = PatternService(self.writer, FakePatternCache(), self.probe)
         self.service = JobService(
             self.connections,
             self.jobs,
             self.queue,
             self.engine,
             self.results,
-            PatternService(self.writer, FakePatternCache(), self.probe),
+            patterns,
+            PiiService(self.classifier, FakeAdviceCache(), patterns),
+            StandardiseService(self.standardiser, FakeAdviceCache()),
             max_active_jobs=3,
             max_attempts=3,
             stale_after=timedelta(minutes=17),
@@ -145,9 +163,11 @@ def test_progress_is_persisted_while_running():
     world.engine.during = lambda job, _cancel: seen.append(world.jobs.get(job.id))
     world.service.run(world.submit().id)
 
+    # The engine said "half way through rewriting". Opening the file is the first 5% of the
+    # job, so half of the rest puts the job at 52%.
     assert (seen[0].status, seen[0].progress, seen[0].stage) == (
         JobStatus.RUNNING,
-        50,
+        52,
         "Transforming",
     )
 
@@ -287,7 +307,7 @@ def test_cancelling_a_running_job_asks_the_engine_to_stop():
 
     cancelled = world.jobs.get(job.id)
     assert cancelled.status is JobStatus.CANCELLED
-    assert cancelled.progress == 50  # how far it got, not reset to zero
+    assert cancelled.progress == 52  # how far it got, not reset to zero
     assert job.id in world.results.deleted
 
 

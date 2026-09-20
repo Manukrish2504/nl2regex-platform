@@ -26,6 +26,8 @@ def _isolated_services(settings, tmp_path):
     for factory in (
         container.connection_service,
         container.pattern_service,
+        container.pii_service,
+        container.standardise_service,
         container.job_service,
         container.preview_service,
     ):

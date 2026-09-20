@@ -1,9 +1,10 @@
 """In-memory stand-ins for the ports, so services are tested without a database, S3 or Celery."""
 
 import copy
+from contextlib import contextmanager
 
 from domain.connections import FileListing
-from domain.jobs import ACTIVE_STATUSES, JobStatus, TransformResult
+from domain.jobs import ACTIVE_STATUSES, JobCancelled, JobStatus, TransformResult
 
 
 class FakeStorage:
@@ -93,21 +94,38 @@ class FakeQueue:
 
 
 class FakeEngine:
-    """Does what the test tells it to: return a result, raise, or run a callback mid-job."""
+    """Stands in for an engine. `during` runs while the file is being rewritten, so that a test
+    can act in the middle of a job."""
 
-    def __init__(self, result=None, error=None, during=None):
+    def __init__(self, result=None, error=None, during=None, columns=None, rows=None, counts=None):
         self.result = result or TransformResult(rows_total=10, rows_changed=4)
-        self.error = error
-        self.during = during
+        self.error, self.during = error, during
+        self.columns = columns or ["id", "email"]
+        self.rows, self.counts = rows or [], counts or []
         self.runs = 0
+        self.operations = None  # what the last rewrite was asked to do
 
-    def run(self, job, connection, destination, on_progress, should_cancel):
+    @contextmanager
+    def open(self, job, connection, on_progress, should_cancel):
+        self._job, self._should_cancel = job, should_cancel
+        yield self
+
+    def sample(self, limit):
+        return self.rows[:limit]
+
+    def distinct_values(self, column, limit, on_progress):
+        return self.counts[:limit]
+
+    def rewrite(self, operations, destination, on_progress):
         self.runs += 1
+        self.operations = operations
         on_progress(0.5, "Transforming")
         if self.during:
-            self.during(job, should_cancel)
+            self.during(self._job, self._should_cancel)
         if self.error:
             raise self.error
+        if self._should_cancel():
+            raise JobCancelled()
         return self.result
 
 
@@ -172,3 +190,42 @@ class FakeProbe:
         self.checked.append(pattern)
         if pattern in self.unsafe:
             raise UnsafePattern("it did not finish on the input 'aaaa!'")
+
+
+class FakeClassifier:
+    def __init__(self, findings=()):
+        self.findings = list(findings)
+        self.calls = []  # the profiles it was shown
+
+    def classify(self, profiles):
+        self.calls.append(profiles)
+        return self.findings
+
+
+class FakeStandardiser:
+    def __init__(self, pairs=()):
+        self.pairs = list(pairs)
+        self.calls = []  # (column, values, instruction)
+
+    def standardise(self, column, values, instruction):
+        self.calls.append((column, values, instruction))
+        return self.pairs
+
+
+class FakeAdviceCache:
+    def __init__(self):
+        self.entries = {}
+
+    def get(self, key):
+        return self.entries.get(key)
+
+    def put(self, key, advice):
+        self.entries[key] = advice
+
+
+def run_replace(
+    engine, job, connection, destination, on_progress=lambda *_: None, should_cancel=lambda: False
+):
+    """Run a job's single find-and-replace through an engine, the way the job service does."""
+    with engine.open(job, connection, on_progress, should_cancel) as opened:
+        return opened.rewrite([job.as_replace()], destination, on_progress)

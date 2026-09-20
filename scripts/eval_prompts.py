@@ -196,8 +196,8 @@ class Usage(logging.Handler):
         self.calls = []
 
     def emit(self, record):
-        if "Claude wrote a pattern" in record.getMessage():
-            _, seconds, tokens_in, tokens_out, _ = record.args
+        if "Claude answered" in record.getMessage():
+            _task, _model, seconds, tokens_in, tokens_out = record.args
             self.calls.append((record.thread, seconds, tokens_in, tokens_out))
 
 
@@ -218,7 +218,7 @@ def judge(pattern: str, case: dict) -> str | None:
 
 def evaluate(model: str, api_key: str) -> dict:
     usage = Usage()
-    logger = logging.getLogger("infrastructure.claude_pattern_writer")
+    logger = logging.getLogger("infrastructure.claude_api")
     logger.addHandler(usage)
     logger.setLevel(logging.INFO)
     service = PatternService(

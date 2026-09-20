@@ -26,9 +26,12 @@ class FileListQuerySerializer(serializers.Serializer):
 
 class JobSubmitSerializer(serializers.Serializer):
     file_key = serializers.CharField(max_length=1024, trim_whitespace=False)
-    # One of the two. Whitespace matters in a pattern and in a replacement, so neither is trimmed.
+    kind = serializers.ChoiceField(["replace", "redact_pii", "standardise"], default="replace")
+    # For "replace", one of the two. Whitespace matters in a pattern and in a replacement, so
+    # neither is trimmed.
     pattern = serializers.CharField(max_length=1000, trim_whitespace=False, required=False)
-    # A plain-English request. Capped, because it is sent to a language model on the server's bill.
+    # Plain English: the request of a "replace" job, or an optional instruction for "standardise".
+    # Capped, because it is sent to a language model on the server's bill.
     prompt = serializers.CharField(min_length=3, max_length=500, required=False)
     replacement = serializers.CharField(
         max_length=1000, allow_blank=True, trim_whitespace=False, default=""
@@ -40,8 +43,16 @@ class JobSubmitSerializer(serializers.Serializer):
     )
 
     def validate(self, data):
-        if ("pattern" in data) == ("prompt" in data):
-            raise serializers.ValidationError("Give either a pattern or a prompt, not both.")
+        kind = data["kind"]
+        if kind == "replace":
+            if ("pattern" in data) == ("prompt" in data):
+                raise serializers.ValidationError("Give either a pattern or a prompt, not both.")
+        elif "pattern" in data:
+            raise serializers.ValidationError("Only a replace job takes a pattern.")
+        elif kind == "redact_pii" and "prompt" in data:
+            raise serializers.ValidationError("A redact_pii job takes no prompt.")
+        elif kind == "standardise" and len(data["columns"]) != 1:
+            raise serializers.ValidationError("Choose exactly one column to standardise.")
         return data
 
 

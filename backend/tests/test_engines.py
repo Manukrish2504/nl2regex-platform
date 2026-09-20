@@ -5,6 +5,7 @@ import io
 from datetime import UTC, datetime
 
 import pytest
+from fakes import run_replace
 from openpyxl import Workbook
 
 from domain import errors
@@ -31,13 +32,15 @@ def job_for(key, pattern=EMAIL, replacement="REDACTED", columns=()):
 
 
 @pytest.fixture(params=["streaming", pytest.param("spark", marks=pytest.mark.spark)])
-def engine(request, bucket_mirror):
+def engine(request, bucket_mirror, tmp_path):
     if request.param == "streaming":
         return StreamingEngine()
     request.getfixturevalue("spark_session")
     from infrastructure.spark_engine import SparkEngine
 
-    return SparkEngine(master="local[2]", source_root=bucket_mirror.as_uri())
+    return SparkEngine(
+        "local[2]", staging_dir=tmp_path / "staging", source_root=bucket_mirror.as_uri()
+    )
 
 
 @pytest.fixture
@@ -47,7 +50,8 @@ def run(engine, connection, tmp_path):
 
     def run_job(job, should_cancel=lambda: False):
         reports = []
-        result = engine.run(
+        result = run_replace(
+            engine,
             job,
             connection,
             store.path_for(job.id),
