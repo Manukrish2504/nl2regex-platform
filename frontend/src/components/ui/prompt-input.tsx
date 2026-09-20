@@ -18,6 +18,8 @@ interface PromptInputProps {
   className?: string
   /** Extra classes for the text itself, such as a monospace font for code. */
   inputClassName?: string
+  /** Shown in place of the text area, for a request that takes no text. */
+  body?: ReactNode
 }
 
 /**
@@ -34,6 +36,7 @@ function PromptInput({
   actions,
   className,
   inputClassName,
+  body,
 }: PromptInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -68,6 +71,7 @@ function PromptInput({
           fraction of a pixel short at some zoom levels, and that alone would draw a scrollbar.
           This wrapper scrolls instead, and only once the text outgrows the height cap. */}
       <div className="max-h-[45vh] overflow-y-auto">
+        {body ?? (
         <Textarea
           ref={textareaRef}
           value={value}
@@ -81,6 +85,7 @@ function PromptInput({
             inputClassName
           )}
         />
+        )}
       </div>
 
       <div className="flex items-end justify-between gap-2 pt-2">

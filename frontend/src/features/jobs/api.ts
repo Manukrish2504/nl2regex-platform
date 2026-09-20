@@ -13,6 +13,7 @@ export type Job = {
   cancel_requested: boolean
   file_key: string
   file_format: 'csv' | 'excel'
+  kind: JobKind
   /** The plain-English request, when the pattern was not typed. */
   prompt: string | null
   /** Empty while a worker is still writing it from the prompt. */
@@ -21,6 +22,8 @@ export type Job = {
   explanation: string | null
   replacement: string
   columns: string[]
+  /** What a language model decided and what that changed, for the kinds it plans. */
+  report: PiiReport | StandardiseReport | null
   error: { code: string; message: string } | null
   rows_total: number | null
   rows_changed: number | null
@@ -30,8 +33,36 @@ export type Job = {
   finished_at: string | null
 }
 
-export type JobRequest = Pick<Job, 'file_key' | 'replacement' | 'columns'> &
-  ({ pattern: string } | { prompt: string })
+export type JobKind = 'replace' | 'redact_pii' | 'standardise'
+
+export type PiiReport = {
+  findings: { column: string; kind: string; reason: string }[]
+  skipped: { column: string; kind: string; reason: string; skipped_because: string }[]
+  operations: { kind: string; placeholder: string; columns: string[]; rows_changed?: number }[]
+  from_cache: boolean
+}
+
+export type StandardiseReport = {
+  column: string
+  mapping: { from: string; to: string; rows: number }[]
+  distinct_before: number
+  distinct_after: number
+  from_cache: boolean
+}
+
+export type JobRequest = Pick<Job, 'file_key' | 'columns'> &
+  (
+    | { kind?: 'replace'; replacement: string; pattern: string }
+    | { kind?: 'replace'; replacement: string; prompt: string }
+    | { kind: 'redact_pii' }
+    | { kind: 'standardise'; prompt?: string }
+  )
+
+export const KIND_LABELS: Record<JobKind, string> = {
+  replace: 'Find and replace',
+  redact_pii: 'Redact personal data',
+  standardise: 'Standardise a column',
+}
 
 export type Page = {
   columns: string[]

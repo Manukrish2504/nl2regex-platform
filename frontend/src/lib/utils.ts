@@ -7,6 +7,13 @@ export function formatFileSize(bytes: number): string {
   return `${parseFloat((bytes / 1024 ** index).toFixed(1))} ${units[index]}`
 }
 
+/**
+ * A value as a language model is shown it: every letter becomes "a" and every digit "9". The
+ * server does the same before anything is sent; this copy only shows the user an example.
+ */
+export const shapeOf = (value: string) =>
+  value.replace(/\p{Lu}/gu, "A").replace(/\p{L}/gu, "a").replace(/\p{Nd}/gu, "9")
+
 const loose = (name: string) => name.toLowerCase().replace(/[ _-]/g, "")
 
 /**
