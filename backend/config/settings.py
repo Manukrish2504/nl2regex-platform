@@ -41,6 +41,9 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 CELERY_BROKER_URL = f"{REDIS_URL}/0"
 CELERY_RESULT_BACKEND = f"{REDIS_URL}/1"
 CELERY_IMPORTS = ("tasks.jobs", "tasks.files")
+# Jobs have a queue of their own. How many run at once is then a capacity decision (how many
+# Spark applications the cluster can hold), and a file preview never waits behind a long job.
+CELERY_TASK_ROUTES = {"tasks.jobs.run_job": {"queue": "jobs"}}
 
 # Jobs are long, so a worker must not reserve more messages than it is running.
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
@@ -71,7 +74,14 @@ RESULTS_DIR = Path(os.environ.get("RESULTS_DIR", BASE_DIR / ".results"))
 # engine is tested against; it needs no JVM, so it doubles as a fallback.
 TRANSFORM_ENGINE = os.environ.get("TRANSFORM_ENGINE", "spark")
 SPARK_MASTER_URL = os.environ.get("SPARK_MASTER_URL", "local[2]")
-SPARK_CONF = {"spark.driver.memory": os.environ.get("SPARK_DRIVER_MEMORY", "1g")}
+SPARK_CONF = {
+    "spark.driver.memory": os.environ.get("SPARK_DRIVER_MEMORY", "1g"),
+    "spark.executor.memory": os.environ.get("SPARK_EXECUTOR_MEMORY", "1g"),
+}
+# The cores one job may take from the cluster. Unset, a job takes every free core, which suits
+# one job at a time. With N jobs at once, give each a share: the cluster's cores divided by N.
+if os.environ.get("SPARK_CORES_MAX"):
+    SPARK_CONF["spark.cores.max"] = os.environ["SPARK_CORES_MAX"]
 # boto3 reads this variable by itself; Spark's S3 connector has to be told. Only set for
 # S3-compatible stores and local fakes, never for AWS.
 S3_ENDPOINT_URL = os.environ.get("AWS_ENDPOINT_URL_S3")

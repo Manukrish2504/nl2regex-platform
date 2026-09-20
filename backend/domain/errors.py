@@ -31,6 +31,11 @@ class StorageUnreachable(DomainError):
     message = "Could not reach Amazon S3. Try again in a moment."
 
 
+class EngineUnavailable(DomainError):
+    code = "engine_unavailable"
+    message = "The processing cluster could not be reached. Try again in a moment."
+
+
 class StorageError(DomainError):
     """An AWS failure with no specific handling. Carries the AWS code so it can be reported."""
 

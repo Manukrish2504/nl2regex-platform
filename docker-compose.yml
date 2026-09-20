@@ -1,7 +1,9 @@
 # Development stack: `docker compose up --build` brings everything up.
-#   UI      http://localhost:5173
-#   API     http://localhost:8000/api/health/
-#   Flower  http://localhost:5555
+#   UI             http://localhost:5173
+#   API            http://localhost:8000/api/health/
+#   Flower         http://localhost:5555   Celery workers, queues and tasks
+#   Spark cluster  http://localhost:8080   the master: its workers and applications
+#   Spark job      http://localhost:4040   stages and tasks, only while a job is running
 
 x-backend: &backend
   # Every backend service builds the same Dockerfile, so the layers (about 2 GB with Spark, Java
@@ -24,6 +26,13 @@ x-backend: &backend
     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nl2regex}
     REDIS_URL: redis://redis:6379
     RESULTS_DIR: /data/results
+    # "streaming" swaps Spark for the single-process reference engine, which needs no JVM.
+    TRANSFORM_ENGINE: ${TRANSFORM_ENGINE:-spark}
+    # Set to local[N] to run Spark inside the job worker instead, on a machine too small for a
+    # cluster. The engine is the same either way.
+    SPARK_MASTER_URL: ${SPARK_MASTER_URL:-spark://spark-master:7077}
+    SPARK_EXECUTOR_MEMORY: ${SPARK_EXECUTOR_MEMORY:-1g}
+    SPARK_CORES_MAX: ${SPARK_CORES_MAX:-}
   depends_on:
     postgres:
       condition: service_healthy
@@ -57,14 +66,58 @@ services:
     ports:
       - "8000:8000"
 
+  # Light work: file previews. Kept apart from jobs so a preview never waits behind one.
   worker:
+    <<: *backend
+    command: celery -A config worker --loglevel info -Q celery --concurrency 2 -n light@%h
+
+  # Jobs. Each one is the driver of a Spark application, so its concurrency is how many
+  # applications the cluster holds at once. With more than one, set SPARK_CORES_MAX to each
+  # job's share of the cluster's cores, or the first job takes them all and the rest wait.
+  worker-jobs:
     <<: *backend
     # One task per process: a job's Spark JVM is a child of the process that ran it, so it ends
     # with the job and takes that connection's keys and cached S3 clients with it.
-    command: celery -A config worker --loglevel info --concurrency 2 --max-tasks-per-child 1
+    command: >
+      celery -A config worker --loglevel info -Q jobs -n jobs@%h
+      --concurrency ${JOB_CONCURRENCY:-1} --max-tasks-per-child 1
     # A JVM outlives the process that started it by a moment, so it is orphaned when it exits.
     # An init process adopts and reaps it; with Celery as PID 1 every job would leave a zombie.
     init: true
+    ports:
+      - "4040:4040"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      spark-master:
+        condition: service_started
+
+  # A standalone Spark cluster. The pip package of PySpark ships bin/spark-class but not the
+  # start-*.sh scripts, which would daemonize anyway; a container wants the foreground process.
+  spark-master:
+    build: ./backend
+    command: spark-class org.apache.spark.deploy.master.Master --host spark-master
+    init: true
+    ports:
+      - "8080:8080"
+
+  # Scale out with `docker compose up -d --scale spark-worker=4`.
+  spark-worker:
+    build: ./backend
+    command: >
+      spark-class org.apache.spark.deploy.worker.Worker
+      --cores ${SPARK_WORKER_CORES:-2} --memory ${SPARK_WORKER_MEMORY:-2g}
+      --work-dir /tmp/spark-work spark://spark-master:7077
+    init: true
+    volumes:
+      # Executors write the result files, and read an Excel file once it is converted.
+      - results:/data
+    deploy:
+      replicas: 2
+    depends_on:
+      - spark-master
 
   flower:
     <<: *backend

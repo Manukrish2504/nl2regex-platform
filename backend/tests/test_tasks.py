@@ -138,3 +138,11 @@ def test_the_preview_task_builds_a_preview(token, put_object):
         "columns": ["id", "email"],
         "rows": [["1", "a@x.com"], ["2", None], ["3", "c@z.org"]],
     }
+
+
+def test_jobs_have_their_own_queue_and_previews_do_not_wait_behind_them():
+    from config import celery_app
+
+    route = celery_app.amqp.router.route
+    assert route({}, "tasks.jobs.run_job")["queue"].name == "jobs"
+    assert route({}, "tasks.files.build_preview")["queue"].name == "celery"
