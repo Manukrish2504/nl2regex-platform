@@ -1,7 +1,7 @@
-import { useConnection } from '@/features/connection/api'
 import { Link } from '@/components/link'
+import { useConnection } from '@/features/connection/api'
 import { matchJobPath, usePath } from '@/lib/router'
-import { cn, fileName } from '@/lib/utils'
+import { cn, fileName, since } from '@/lib/utils'
 import { KIND_LABELS, useJobs } from './api'
 import { StatusDot } from './status'
 
@@ -13,37 +13,46 @@ export function RecentJobs() {
 
   if (!connection || !jobs?.length) {
     return (
-      <p className="px-2 text-sm text-muted-foreground/70">
-        {connection ? 'Your transformations will appear here.' : 'Connect a bucket to see your transformations.'}
+      <p className="px-2 py-1 text-[12px] leading-relaxed text-dim">
+        {connection
+          ? 'Your transformations will appear here.'
+          : 'Connect a bucket to see your transformations.'}
       </p>
     )
   }
 
   return (
-    <ul className="-mx-1 flex min-h-0 flex-col gap-0.5 overflow-y-auto px-1">
-      {jobs.map((job) => (
-        <li key={job.id}>
-          <Link
-            href={`/jobs/${job.id}`}
-            aria-current={job.id === openJobId ? 'page' : undefined}
-            className={cn(
-              'flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition-colors hover:bg-sidebar-accent',
-              job.id === openJobId && 'bg-sidebar-accent',
-            )}
-          >
-            <StatusDot status={job.status} />
-            <span className="min-w-0 flex-1">
-              <span className="block truncate">{fileName(job.file_key)}</span>
-              <span className={cn('block truncate text-xs text-muted-foreground', job.kind === 'replace' && !job.prompt && 'font-mono')}>
-                {job.kind === 'replace' ? (job.prompt ?? job.pattern) : KIND_LABELS[job.kind]}
+    <ul className="flex flex-col">
+      {jobs.map((job) => {
+        const open = job.id === openJobId
+        return (
+          <li key={job.id}>
+            <Link
+              href={`/jobs/${job.id}`}
+              aria-current={open ? 'page' : undefined}
+              className={cn(
+                'relative flex items-start gap-2.5 rounded-[9px] px-2.5 py-2 transition-colors',
+                open ? 'tint' : 'hover:bg-[#0e1312]',
+              )}
+            >
+              <StatusDot status={job.status} className="mt-1.5" />
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span
+                  className={cn('truncate text-[13px]', open ? 'text-foreground' : 'text-[#d5dedb]')}
+                >
+                  {fileName(job.file_key)}
+                </span>
+                <span className="truncate text-[11px] text-dim">
+                  {job.kind === 'replace'
+                    ? (job.prompt ?? job.pattern)
+                    : KIND_LABELS[job.kind]}{' '}
+                  · {since(job.created_at)}
+                </span>
               </span>
-            </span>
-            {job.status === 'RUNNING' && (
-              <span className="text-xs text-muted-foreground tabular-nums">{job.progress}%</span>
-            )}
-          </Link>
-        </li>
-      ))}
+            </Link>
+          </li>
+        )
+      })}
     </ul>
   )
 }

@@ -210,11 +210,11 @@ def language_model(settings):
 
 
 def test_the_config_endpoint_says_whether_prompts_can_be_used(client, settings):
-    assert client.get("/api/config/").json() == {"describe_available": False}
+    assert client.get("/api/config/").json() == {"describe_available": False, "model": None}
 
 
 def test_the_config_endpoint_with_a_key(client, language_model):
-    assert client.get("/api/config/").json() == {"describe_available": True}
+    assert client.get("/api/config/").json() == {"describe_available": True, "model": "claude-opus-5"}
 
 
 def test_a_prompt_alone_is_queued_and_the_model_is_not_called_by_the_request(
