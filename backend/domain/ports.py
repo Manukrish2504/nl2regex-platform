@@ -1,8 +1,12 @@
 """What the application needs from the outside world. Infrastructure implements these."""
 
+from collections.abc import Callable
+from pathlib import Path
 from typing import Protocol
 
-from domain.connections import Connection, FileListing, S3Credentials
+from domain.connections import Connection, FileFormat, FileListing, S3Credentials
+from domain.jobs import Job, JobStatus, TransformResult
+from domain.tables import FilePreview, Row
 
 
 class ObjectStorage(Protocol):
@@ -25,3 +29,87 @@ class CredentialVault(Protocol):
         ...
 
     def delete(self, connection_id: str) -> None: ...
+
+
+class JobRepository(Protocol):
+    def add(self, job: Job) -> None: ...
+
+    def get(self, job_id: str) -> Job | None: ...
+
+    def save(self, job: Job, expected_status: JobStatus, expected_attempts: int) -> bool:
+        """Write the job only if its stored status and attempts still match (compare-and-set).
+
+        Returns False when someone else changed the job first. Never writes cancel_requested.
+        """
+        ...
+
+    def save_progress(self, job_id: str, progress: int, stage: str) -> None:
+        """Update the progress columns of a RUNNING job, and nothing else."""
+        ...
+
+    def request_cancel(self, job_id: str) -> bool:
+        """Flag a RUNNING job for cancellation. False if it is not running."""
+        ...
+
+    def is_cancel_requested(self, job_id: str) -> bool: ...
+
+    def list_for_connection(self, connection_id: str, limit: int) -> list[Job]: ...
+
+    def count_active(self, connection_id: str) -> int: ...
+
+
+class TaskQueue(Protocol):
+    """Hands work to background workers. Only IDs travel, never credentials."""
+
+    def enqueue_job(self, job_id: str) -> None: ...
+
+    def enqueue_preview(self, connection_id: str, file_key: str) -> None: ...
+
+
+class TransformEngine(Protocol):
+    def run(
+        self,
+        job: Job,
+        connection: Connection,
+        destination: Path,
+        on_progress: Callable[[float, str], None],
+        should_cancel: Callable[[], bool],
+    ) -> TransformResult:
+        """Apply the job's pattern to its file and write Parquet files into `destination`.
+
+        Reports progress as a fraction from 0 to 1 with a short stage name, raises JobCancelled
+        once `should_cancel` turns true, and raises a DomainError for anything the user can fix.
+        """
+        ...
+
+
+class ResultStore(Protocol):
+    def path_for(self, job_id: str) -> Path: ...
+
+    def read_rows(self, job_id: str, offset: int, limit: int) -> tuple[list[str], list[Row]] | None:
+        """Column names and up to `limit` rows from `offset`, or None if the results are gone."""
+        ...
+
+    def delete(self, job_id: str) -> None: ...
+
+    def purge_older_than(self, seconds: int) -> None: ...
+
+
+class FileInspector(Protocol):
+    def preview(
+        self, connection: Connection, file_key: str, file_format: FileFormat
+    ) -> FilePreview:
+        """Column names and the first rows, reading as little of the file as possible."""
+        ...
+
+
+class PreviewStore(Protocol):
+    """Short-lived storage for previews built in the background. Entries are plain dicts."""
+
+    def get(self, connection_id: str, file_key: str) -> dict | None: ...
+
+    def mark_pending(self, connection_id: str, file_key: str) -> bool:
+        """Claim the preview. False if another request already did, so it is enqueued only once."""
+        ...
+
+    def put(self, connection_id: str, file_key: str, entry: dict) -> None: ...

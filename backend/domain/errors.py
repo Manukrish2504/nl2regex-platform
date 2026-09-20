@@ -48,3 +48,63 @@ class InvalidPageToken(DomainError):
 class ConnectionNotFound(DomainError):
     code = "connection_not_found"
     message = "Your S3 connection has expired. Connect again to continue."
+
+
+class UnsupportedFile(DomainError):
+    code = "unsupported_file"
+    message = "Only CSV and Excel (.xlsx) files can be processed."
+
+
+class ObjectNotFound(DomainError):
+    code = "file_not_found"
+    message = "That file no longer exists in the bucket."
+
+
+class FileUnreadable(DomainError):
+    code = "file_unreadable"
+    message = "The file could not be read."
+
+
+class FileTooLarge(DomainError):
+    code = "file_too_large"
+    message = "This Excel file is too large to process."
+
+
+class ColumnNotFound(DomainError):
+    code = "column_not_found"
+
+    def __init__(self, missing: list[str]):
+        super().__init__(
+            f"The file has no column named {', '.join(repr(name) for name in missing)}."
+        )
+
+
+class InvalidPattern(DomainError):
+    code = "invalid_pattern"
+
+    def __init__(self, reason: str):
+        super().__init__(f"That is not a valid regular expression: {reason}.")
+
+
+class TooManyActiveJobs(DomainError):
+    code = "too_many_active_jobs"
+    message = "You already have several jobs in progress. Wait for one to finish, or cancel one."
+
+
+class JobNotFound(DomainError):
+    code = "job_not_found"
+    message = "No such job."
+
+
+class JobNotFinished(DomainError):
+    code = "job_not_finished"
+    message = "This job has no results yet."
+
+
+class ResultsExpired(DomainError):
+    code = "results_expired"
+    message = "The results of this job have been deleted. Run it again to see them."
+
+
+class InvalidTransition(DomainError):
+    code = "invalid_transition"
