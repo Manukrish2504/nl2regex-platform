@@ -3,10 +3,31 @@ name = "nl2regex-backend"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
+    "boto3>=1.43.98",
     "celery[redis]>=5.6.3",
+    "cryptography>=50.0.1",
     "django>=5.2,<6",
     "djangorestframework>=3.18.1",
     "flower>=2.1.0",
     "gunicorn>=26.2.0",
     "psycopg[binary]>=3.3.6",
 ]
+
+[dependency-groups]
+dev = [
+    "moto[s3]>=5.2.3",
+    "pytest>=9.1.1",
+    "pytest-django>=4.14.0",
+    "ruff>=0.16.8",
+]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings_test"
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
