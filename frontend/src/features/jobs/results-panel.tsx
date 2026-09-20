@@ -32,7 +32,7 @@ export function ResultsPanel({ job, onClose }: { job: Job; onClose: () => void }
   const first = (page - 1) * pageSize + 1
 
   return (
-    <aside className="flex w-full shrink-0 flex-col border-t border-rule bg-[#080b0a] lg:w-[46%] lg:max-w-[720px] lg:border-t-0 lg:border-l">
+    <aside className="absolute inset-0 z-20 flex flex-col bg-[#080b0a] lg:static lg:z-0 lg:w-[46%] lg:max-w-[720px] lg:shrink-0 lg:border-l lg:border-rule">
       <header className="flex h-[52px] shrink-0 items-center gap-3 border-b border-rule px-4">
         <div className="min-w-0 flex-1">
           <p className="truncate font-mono text-[13px] text-[#e8efec]">{fileName(job.file_key)}</p>

@@ -1,11 +1,12 @@
-import type { ReactNode } from 'react'
-import { ChevronDown, Plug, Plus, Search, Unplug } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
+import { ChevronDown, Menu, Plug, Plus, Search, Unplug, X } from 'lucide-react'
 
 import { Diamond } from '@/components/diamond'
 import { Button } from '@/components/ui/button'
 import { useConfig } from '@/features/config/api'
 import { useConnection, useDisconnect } from '@/features/connection/api'
 import { RecentJobs } from '@/features/jobs/recent-jobs'
+import { cn } from '@/lib/utils'
 
 interface AppShellProps {
   title: ReactNode
@@ -22,6 +23,10 @@ interface AppShellProps {
  * same components serve a phone.
  */
 export function AppShell({ title, onNewTransformation, onConnect, panel, children }: AppShellProps) {
+  // On a phone the sidebar is a drawer over the work, as in a chat app. On a desktop it is
+  // always there, and this state is never used.
+  const [drawerOpen, setDrawerOpen] = useState(false)
+
   return (
     <div className="relative flex min-h-svh items-start justify-center bg-background p-0 lg:items-center lg:p-7">
       <div
@@ -29,13 +34,55 @@ export function AppShell({ title, onNewTransformation, onConnect, panel, childre
         className="glow pointer-events-none absolute top-[-18%] left-1/2 hidden h-[520px] w-[900px] -translate-x-1/2 rounded-[50%] lg:block"
       />
 
-      <div className="relative flex min-h-svh w-full flex-col overflow-hidden bg-surface lg:h-[min(868px,calc(100svh-56px))] lg:min-h-[560px] lg:max-w-[1380px] lg:flex-row lg:rounded-[14px] lg:shadow-[0_0_0_1px_var(--surface-edge),0_40px_90px_-20px_rgba(0,0,0,0.9)]">
-        <Sidebar onNewTransformation={onNewTransformation} onConnect={onConnect} />
+      <div className="relative flex h-svh w-full flex-col overflow-hidden bg-surface lg:h-[min(868px,calc(100svh-56px))] lg:min-h-[560px] lg:max-w-[1380px] lg:flex-row lg:rounded-[14px] lg:shadow-[0_0_0_1px_var(--surface-edge),0_40px_90px_-20px_rgba(0,0,0,0.9)]">
+        {/* The drawer's backdrop. Present only while it is open, and only on a phone. */}
+        {drawerOpen && (
+          <button
+            type="button"
+            aria-label="Close the menu"
+            onClick={() => setDrawerOpen(false)}
+            className="absolute inset-0 z-30 bg-black/60 backdrop-blur-[2px] lg:hidden"
+          />
+        )}
+
+        {/* Anything tapped inside the drawer either navigates or acts, and then the drawer
+            has done its job, so the whole of it closes on click. */}
+        <div
+          onClick={() => setDrawerOpen(false)}
+          className={cn(
+            'absolute inset-y-0 left-0 z-40 w-[82%] max-w-[300px] transition-transform duration-200 ease-out lg:static lg:z-0 lg:w-[262px] lg:translate-x-0',
+            drawerOpen ? 'translate-x-0 shadow-2xl shadow-black/60' : '-translate-x-full',
+          )}
+        >
+          <Sidebar
+            onNewTransformation={onNewTransformation}
+            onConnect={onConnect}
+            onClose={() => setDrawerOpen(false)}
+          />
+        </div>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <header className="flex h-[52px] shrink-0 items-center gap-3 border-b border-rule px-5">
+          <header className="flex h-[52px] shrink-0 items-center gap-2 border-b border-rule px-3 lg:gap-3 lg:px-5">
+            <button
+              type="button"
+              aria-label="Open the menu"
+              onClick={() => setDrawerOpen(true)}
+              className="-ml-1 flex size-9 shrink-0 items-center justify-center rounded-[10px] text-dim transition-colors hover:text-foreground lg:hidden"
+            >
+              <Menu className="size-4.5" />
+            </button>
             <div className="flex min-w-0 flex-1 items-center gap-2.5">{title}</div>
-            <ModelPill />
+            <div className="hidden lg:block">
+              <ModelPill />
+            </div>
+            <button
+              type="button"
+              aria-label="New transformation"
+              onClick={onNewTransformation}
+              className="-mr-1 flex size-9 shrink-0 items-center justify-center rounded-[10px] text-dim transition-colors hover:text-foreground lg:hidden"
+            >
+              <Plus className="size-4.5" />
+            </button>
           </header>
 
           <div className="flex min-h-0 flex-1">
@@ -51,21 +98,33 @@ export function AppShell({ title, onNewTransformation, onConnect, panel, childre
 function Sidebar({
   onNewTransformation,
   onConnect,
+  onClose,
 }: {
   onNewTransformation: () => void
   onConnect: () => void
+  onClose: () => void
 }) {
   const { data: connection } = useConnection()
   const { disconnect, pending } = useDisconnect()
 
   return (
-    <aside className="flex w-full shrink-0 flex-col border-b border-sidebar-border bg-sidebar lg:w-[262px] lg:border-r lg:border-b-0">
+    <aside className="flex h-full w-full shrink-0 flex-col border-sidebar-border bg-sidebar lg:border-r">
       {/* The window's own buttons. Decoration on the web, and the thing that makes it read as
-          an application rather than a page. */}
-      <div className="hidden items-center gap-2 px-4 pt-[15px] pb-1 lg:flex">
-        {[0, 1, 2].map((dot) => (
-          <span key={dot} className="size-[11px] rounded-full bg-[#2c3735]" />
-        ))}
+          an application rather than a page. A phone gets a way out of the drawer instead. */}
+      <div className="flex items-center gap-2 px-4 pt-4 pb-1 lg:pt-[15px]">
+        <span className="hidden items-center gap-2 lg:flex">
+          {[0, 1, 2].map((dot) => (
+            <span key={dot} className="size-[11px] rounded-full bg-[#2c3735]" />
+          ))}
+        </span>
+        <button
+          type="button"
+          aria-label="Close the menu"
+          onClick={onClose}
+          className="-ml-2 flex size-8 items-center justify-center rounded-[10px] text-dim lg:hidden"
+        >
+          <X className="size-4" />
+        </button>
       </div>
 
       <div className="flex items-center gap-2.5 px-3.5 py-3 lg:pt-3 lg:pb-2.5">
@@ -109,7 +168,7 @@ function Sidebar({
       </nav>
 
       {connection && (
-        <div className="hidden items-center gap-2.5 border-t border-sidebar-border px-3.5 py-3 lg:flex">
+        <div className="flex items-center gap-2.5 border-t border-sidebar-border px-3.5 py-3">
           <span className="flex size-[26px] shrink-0 items-center justify-center rounded-full bg-[#0e1312] text-[10px] font-medium text-dim inset-ring inset-ring-[#1b2422]">
             S3
           </span>

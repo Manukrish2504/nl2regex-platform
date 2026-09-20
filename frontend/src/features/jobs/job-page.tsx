@@ -43,9 +43,10 @@ export function JobPage({ jobId, panelOpen, onPanelOpenChange }: JobPageProps) {
   const job = useJob(jobId)
   const finished = job.data?.status === 'SUCCESS'
 
-  // The results open by themselves the moment there are any.
+  // On a desktop the results open by themselves the moment there are any: there is room for
+  // them beside the conversation. On a phone they would cover it, so they wait to be asked.
   useEffect(() => {
-    if (finished) onPanelOpenChange(true)
+    if (finished && window.matchMedia('(min-width: 1024px)').matches) onPanelOpenChange(true)
   }, [finished, onPanelOpenChange])
 
   if (connectionPending || (connection && job.isPending)) {
