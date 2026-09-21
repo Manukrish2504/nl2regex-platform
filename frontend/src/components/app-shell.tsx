@@ -196,9 +196,12 @@ function WorkspaceMenu({ onConnect, onClose }: { onConnect: () => void; onClose:
           <span className="truncate text-[13px] leading-tight" title={connection?.bucket}>
             {connection ? connection.bucket : 'No bucket connected'}
           </span>
-          <span className="block truncate text-[11px] text-dim">
-            {connection ? `${connection.region} · read-only` : 'Connect an S3 bucket'}
-          </span>
+          {/* Disconnected, the line above says it and the button above that offers it. */}
+          {connection && (
+            <span className="block truncate text-[11px] text-dim">
+              {connection.region} · read-only
+            </span>
+          )}
         </span>
         <ChevronUp
           className={cn(
