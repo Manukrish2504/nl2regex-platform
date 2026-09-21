@@ -1,0 +1,41 @@
+{
+  "name": "nl2regex-platform",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+
+  // The application is a Docker Compose stack, so the Codespace needs a Docker daemon of its own.
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+
+  // Four cores, because one Spark worker takes two and the driver, gunicorn and Postgres want
+  // the rest. On the free plan this spends 4 of the 120 core-hours a month for every hour the
+  // Codespace is running, so stop it when you are not showing it.
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "16gb",
+    "storage": "64gb"
+  },
+
+  // Caddy serves the whole application — the built UI and /api behind one origin — on port 80.
+  // Codespaces puts its own HTTPS in front, which is why SITE_HOST is ":80" and not a hostname.
+  "forwardPorts": [80],
+  "portsAttributes": {
+    "80": {
+      "label": "nl2regex",
+      "onAutoForward": "notify",
+      // Public so the link can be opened by someone who is not signed in as you. Organisation
+      // policy can forbid this; if the port comes up Private, set it in the Ports panel instead.
+      "visibility": "public"
+    }
+  },
+
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "postStartCommand": "docker compose -f docker-compose.prod.yml up -d",
+  "waitFor": "postCreateCommand",
+
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python", "charliermarsh.ruff", "dbaeumer.vscode-eslint"]
+    }
+  }
+}
