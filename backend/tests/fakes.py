@@ -104,10 +104,12 @@ class FakeEngine:
         self.rows, self.counts = rows or [], counts or []
         self.runs = 0
         self.operations = None  # what the last rewrite was asked to do
+        self.source = None
 
     @contextmanager
-    def open(self, job, connection, on_progress, should_cancel):
+    def open(self, job, connection, on_progress, should_cancel, source=None):
         self._job, self._should_cancel = job, should_cancel
+        self.source = source  # the folder a follow-up reads, or None for the file in the bucket
         yield self
 
     def sample(self, limit):

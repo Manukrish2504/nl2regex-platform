@@ -325,3 +325,48 @@ def test_the_first_rows_can_be_sampled_without_a_pass_over_the_file(engine, conn
         ["1", "John Doe", "john@x.com", "USA", "write to j.doe@y.org"],
         ["2", "Jane Smith", None, "us", "nothing here"],
     ]
+
+
+def test_a_follow_up_reads_what_an_earlier_job_wrote(engine, connection, put_object, tmp_path):
+    """The second request runs on the first one's output, not on the file in the bucket."""
+    key = put_object("c.csv", b"id,email,notes\n1,a@x.com,call 555-123-4567\n2,b@y.org,nothing\n")
+    store = ParquetResultStore(tmp_path / "out")
+    job = job_for(key, columns=["email"])
+
+    with engine.open(job, connection, lambda *_: None, lambda: False) as first:
+        first.rewrite(
+            [Replace(EMAIL, "[EMAIL]", ["email"])], store.path_for("first"), lambda *_: None
+        )
+
+    # Now follow it up, reading the result folder instead of the bucket.
+    with engine.open(
+        job, connection, lambda *_: None, lambda: False, source=store.path_for("first")
+    ) as second:
+        assert second.columns == ["id", "email", "notes"]
+        assert second.sample(1) == [["1", "[EMAIL]", "call 555-123-4567"]]
+        result = second.rewrite(
+            [Replace(r"\d{3}-\d{3}-\d{4}", "[PHONE]", ["notes"])],
+            store.path_for("second"),
+            lambda *_: None,
+        )
+
+    assert (result.rows_total, result.rows_changed) == (2, 1)
+    assert store.read_rows("second", 0, 10)[1] == [
+        ["1", "[EMAIL]", "call [PHONE]"],
+        ["2", "[EMAIL]", "nothing"],
+    ]
+
+
+def test_a_follow_up_can_count_values_too(engine, connection, put_object, tmp_path):
+    key = put_object("c.csv", b"id,country\n1,USA\n2,us\n3,USA\n")
+    store = ParquetResultStore(tmp_path / "out")
+    job = job_for(key, pattern="nothing-matches")
+
+    with engine.open(job, connection, lambda *_: None, lambda: False) as first:
+        first.rewrite([job.as_replace()], store.path_for("first"), lambda *_: None)
+    with engine.open(
+        job, connection, lambda *_: None, lambda: False, source=store.path_for("first")
+    ) as second:
+        counts = second.distinct_values("country", 10, lambda *_: None)
+
+    assert counts == [("USA", 2), ("us", 1)]

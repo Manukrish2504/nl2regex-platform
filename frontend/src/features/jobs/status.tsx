@@ -44,7 +44,7 @@ export function StatusBadge({ status }: { status: JobStatus }) {
           ? 'bg-destructive/10 text-destructive'
           : status === 'SUCCESS' || status === 'RUNNING'
             ? 'tint text-primary'
-            : 'bg-[#0e1312] text-dim inset-ring inset-ring-[#1b2422]',
+            : 'bg-muted text-dim inset-ring inset-ring-input',
       )}
     >
       <StatusDot status={status} />

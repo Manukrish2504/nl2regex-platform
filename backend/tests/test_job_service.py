@@ -589,3 +589,59 @@ def test_these_kinds_need_a_language_model():
     for kind, columns in (("redact_pii", []), ("standardise", ["country"])):
         with pytest.raises(errors.LLMNotConfigured):
             world.submit(kind=kind, pattern="", replacement="", columns=columns)
+
+
+# --- follow-ups ------------------------------------------------------------------------------
+
+
+def test_a_follow_up_reads_the_earlier_jobs_result_and_inherits_its_file():
+    world = World(results=FakeResults(rows=[["1", "[EMAIL]"]]))
+    first = world.submit()
+    world.service.run(first.id)
+
+    second = world.service.submit(
+        world.token, replacement="***", columns=[], pattern=r"\d+", source_job_id=first.id
+    )
+    world.service.run(second.id)
+
+    assert second.file_key == first.file_key
+    assert second.source_job_id == first.id
+    # The engine was pointed at the first job's output, not at the bucket.
+    assert world.engine.source == world.results.path_for(first.id)
+    assert world.jobs.get(second.id).status is JobStatus.SUCCESS
+
+
+def test_only_a_job_that_finished_can_be_followed_up():
+    world = World(engine=FakeEngine(error=errors.ColumnNotFound(["emial"])))
+    failed = world.submit()
+    world.service.run(failed.id)
+
+    with pytest.raises(errors.SourceJobUnusable, match="did not finish successfully"):
+        world.service.submit(
+            world.token, replacement="", columns=[], pattern="a", source_job_id=failed.id
+        )
+    assert len(world.queue.jobs) == 1  # the failed job only
+
+
+def test_a_follow_up_needs_the_earlier_result_to_still_be_there():
+    world = World(results=FakeResults(rows=[["1", "x"]]))
+    first = world.submit()
+    world.service.run(first.id)
+    world.results.rows = None  # the eight-hour clean-up has taken it
+
+    with pytest.raises(errors.ResultsExpired):
+        world.service.submit(
+            world.token, replacement="", columns=[], pattern="a", source_job_id=first.id
+        )
+
+
+def test_another_connections_job_cannot_be_followed_up():
+    world = World(results=FakeResults(rows=[["1", "x"]]))
+    first = world.submit()
+    world.service.run(first.id)
+    other_token, _ = world.connections.connect(CREDENTIALS, "another-bucket")
+
+    with pytest.raises(errors.JobNotFound):
+        world.service.submit(
+            other_token, replacement="", columns=[], pattern="a", source_job_id=first.id
+        )

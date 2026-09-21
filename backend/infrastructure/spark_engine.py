@@ -89,10 +89,18 @@ class SparkEngine:
         connection: Connection,
         on_progress: Progress,
         should_cancel: Callable[[], bool],
+        source: Path | None = None,
     ) -> Iterator["_SparkFile"]:
         on_progress(0.0, "Reading the header")
         with ExitStack() as cleanup:
-            if job.file_format is FileFormat.CSV:
+            if source is not None:
+                # A follow-up: the input is what an earlier job wrote, already Parquet, and on
+                # the disk the executors share.
+                dataset = pq.ParquetDataset(source)
+                columns = dataset.schema.names
+                first_rows = iter(_head(dataset, SAMPLE_ROWS))
+                load = partial(_read_parquet, uri=source.as_uri(), names=columns)
+            elif job.file_format is FileFormat.CSV:
                 # One small ranged GET. A bad key, a missing or empty file and a wrong encoding
                 # all fail here, in milliseconds, before any JVM is started.
                 head = read_first_lines(connection, job.file_key, tabular.CSV_HEAD_BYTES)
@@ -122,7 +130,8 @@ class SparkEngine:
                 columns=columns,
                 first_rows=first_rows,
                 load=load,
-                splittable=job.file_format is FileFormat.CSV,
+                # Parquet is never split over lines; only a CSV read from the bucket can be.
+                splittable=source is None and job.file_format is FileFormat.CSV,
                 start_session=partial(self._session, job, connection),
                 should_cancel=should_cancel,
             )
@@ -349,8 +358,28 @@ def _check_java_pattern(spark: SparkSession, pattern: str) -> None:
         ) from error
 
 
-def _read_parquet(spark: SparkSession, _multiline: bool, uri: str) -> DataFrame:
-    return spark.read.parquet(uri)
+def _read_parquet(
+    spark: SparkSession, _multiline: bool, uri: str, names: list[str] | None = None
+) -> DataFrame:
+    frame = spark.read.parquet(uri)
+    # Columns are addressed by position everywhere below, as they are for a CSV.
+    return (
+        frame.select(
+            *[F.col(f"`{name}`").alias(f"c{index}") for index, name in enumerate(names or [])]
+        )
+        if names
+        else frame
+    )
+
+
+def _head(dataset: "pq.ParquetDataset", limit: int) -> list[Row]:
+    """The first rows of a written result, for a sample."""
+    return _as_rows(dataset.read().slice(0, limit))
+
+
+def _as_rows(table) -> list[Row]:
+    columns = [column.to_pylist() for column in table.columns]
+    return [list(row) for row in zip(*columns, strict=True)]
 
 
 def _read_csv(

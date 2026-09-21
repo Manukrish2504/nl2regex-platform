@@ -21,6 +21,7 @@ class JobRecord(models.Model):
     explanation = models.TextField(null=True)
     pattern_source = models.CharField(max_length=8, default="user")
     kind = models.CharField(max_length=16, default="replace")
+    source_job_id = models.UUIDField(null=True)
     report = models.JSONField(null=True)
     status = models.CharField(max_length=16)
     progress = models.PositiveSmallIntegerField(default=0)

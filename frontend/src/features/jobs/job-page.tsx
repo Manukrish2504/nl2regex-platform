@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   Check,
@@ -21,12 +21,15 @@ import { ApiError } from '@/lib/api'
 import { cn, duration, fileName } from '@/lib/utils'
 import {
   cancelJob,
+  chainOf,
   isActive,
   useJob,
+  useJobs,
   type Job,
   type PiiReport,
   type StandardiseReport,
 } from './api'
+import { FollowUp } from './follow-up'
 
 interface JobPageProps {
   jobId: string
@@ -76,13 +79,22 @@ export function JobPage({ jobId, panelOpen, onPanelOpenChange }: JobPageProps) {
       />
     )
   }
-  return <Conversation job={job.data!} panelOpen={panelOpen} onPanelOpenChange={onPanelOpenChange} />
+  return (
+    <Conversation job={job.data!} panelOpen={panelOpen} onPanelOpenChange={onPanelOpenChange} />
+  )
 }
 
-function Conversation({ job, panelOpen, onPanelOpenChange }: { job: Job } & Omit<JobPageProps, 'jobId'>) {
+function Conversation({
+  job,
+  panelOpen,
+  onPanelOpenChange,
+}: { job: Job } & Omit<JobPageProps, 'jobId'>) {
   const queryClient = useQueryClient()
+  const { data: jobs } = useJobs()
   const [cancelling, setCancelling] = useState(false)
   const stopping = cancelling || job.cancel_requested
+  // Everything this job was built on, oldest first. One file, one conversation.
+  const chain = chainOf(job, jobs ?? [])
 
   async function handleCancel() {
     setCancelling(true)
@@ -96,8 +108,17 @@ function Conversation({ job, panelOpen, onPanelOpenChange }: { job: Job } & Omit
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-6 py-8">
-          <Asked job={job} />
-          <Answer job={job} panelOpen={panelOpen} onPanelOpenChange={onPanelOpenChange} />
+          {chain.map((turn) => (
+            <Fragment key={turn.id}>
+              <Asked job={turn} />
+              <Answer
+                job={turn}
+                panelOpen={panelOpen}
+                onPanelOpenChange={onPanelOpenChange}
+                current={turn.id === job.id}
+              />
+            </Fragment>
+          ))}
         </div>
       </div>
 
@@ -105,7 +126,7 @@ function Conversation({ job, panelOpen, onPanelOpenChange }: { job: Job } & Omit
         <div className="mx-auto w-full max-w-[720px]">
           {isActive(job) ? (
             <div
-              className="flex flex-col gap-2.5 rounded-[14px] bg-[#0b100f] p-3.5 shadow-[inset_0_0_0_1px_var(--surface-edge)]"
+              className="flex flex-col gap-2.5 rounded-[14px] bg-popover p-3.5 shadow-[inset_0_0_0_1px_var(--surface-edge)]"
               aria-live="polite"
             >
               <div className="flex items-center gap-2.5 text-[13px]">
@@ -121,7 +142,7 @@ function Conversation({ job, panelOpen, onPanelOpenChange }: { job: Job } & Omit
                   Cancel
                 </Button>
               </div>
-              <div className="h-[3px] overflow-hidden rounded-full bg-[#141b19]">
+              <div className="h-[3px] overflow-hidden rounded-full bg-rule">
                 <div
                   role="progressbar"
                   aria-label="Job progress"
@@ -131,6 +152,8 @@ function Conversation({ job, panelOpen, onPanelOpenChange }: { job: Job } & Omit
                 />
               </div>
             </div>
+          ) : job.status === 'SUCCESS' && job.rows_total ? (
+            <FollowUp job={job} />
           ) : (
             <div className="flex flex-wrap items-center gap-2">
               <Button asChild variant="outline" size="sm">
@@ -139,17 +162,23 @@ function Conversation({ job, panelOpen, onPanelOpenChange }: { job: Job } & Omit
                   New transformation
                 </Link>
               </Button>
-              {job.status === 'SUCCESS' && !panelOpen && (
-                <Button variant="ghost" size="sm" onClick={() => onPanelOpenChange(true)}>
-                  <PanelRight className="size-3.5" />
-                  Show the rows
-                </Button>
-              )}
             </div>
           )}
-          <p className="pt-2.5 text-center text-[11px] text-dim">
-            Your file is never modified. Every job writes a separate copy, and the bucket is opened
-            read-only.
+          <p className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 pt-2.5 text-center text-[11px] text-dim">
+            <span>
+              Your file is never modified. Every step writes a separate copy, and the bucket is
+              opened read-only.
+            </span>
+            {job.status === 'SUCCESS' && Boolean(job.rows_total) && !panelOpen && (
+              <button
+                type="button"
+                onClick={() => onPanelOpenChange(true)}
+                className="flex items-center gap-1.5 underline underline-offset-4 hover:text-foreground"
+              >
+                <PanelRight className="size-3" />
+                Show the rows
+              </button>
+            )}
           </p>
         </div>
       </div>
@@ -170,7 +199,7 @@ function Asked({ job }: { job: Job }) {
     <div className="flex justify-end">
       <p
         className={cn(
-          'max-w-[85%] rounded-[13px] bg-[#0d1211] px-4 py-3 text-[15.5px] leading-relaxed inset-ring inset-ring-[#17201e]',
+          'max-w-[85%] rounded-[13px] bg-secondary px-4 py-3 text-[15.5px] leading-relaxed inset-ring inset-ring-border',
           job.kind === 'replace' && !job.prompt && 'font-mono text-[13px]',
         )}
       >
@@ -181,7 +210,12 @@ function Asked({ job }: { job: Job }) {
 }
 
 /** What the system decided and did, in the voice of the application. */
-function Answer({ job, panelOpen, onPanelOpenChange }: { job: Job } & Omit<JobPageProps, 'jobId'>) {
+function Answer({
+  job,
+  panelOpen,
+  onPanelOpenChange,
+  current,
+}: { job: Job; current: boolean } & Omit<JobPageProps, 'jobId'>) {
   const writing = job.kind === 'replace' && Boolean(job.prompt) && !job.pattern
 
   return (
@@ -202,17 +236,11 @@ function Answer({ job, panelOpen, onPanelOpenChange }: { job: Job } & Omit<JobPa
             <CodeCard
               label={job.pattern_source === 'user' ? 'Your pattern' : 'Pattern'}
               code={job.pattern}
-              badge={
-                job.pattern_source === 'user'
-                  ? undefined
-                  : job.pattern_source === 'cache'
-                    ? 'from cache'
-                    : 'written by Claude'
-              }
+              badge={job.pattern_source === 'cache' ? 'from cache' : undefined}
             />
           )}
           {job.explanation && (
-            <p className="text-[15.5px] leading-relaxed text-[#cdd8d5]">{job.explanation}</p>
+            <p className="text-[15.5px] leading-relaxed text-body">{job.explanation}</p>
           )}
           <dl className="flex flex-wrap gap-x-6 gap-y-1 text-[13px]">
             <div className="flex gap-2">
@@ -250,7 +278,7 @@ function Answer({ job, panelOpen, onPanelOpenChange }: { job: Job } & Omit<JobPa
       )}
 
       {job.status === 'CANCELLED' && (
-        <p className="text-[15.5px] text-[#98a5a1]">
+        <p className="text-[15.5px] text-muted-foreground">
           Cancelled at {job.progress}%. Nothing was kept: the partial output has been deleted.
         </p>
       )}
@@ -259,26 +287,28 @@ function Answer({ job, panelOpen, onPanelOpenChange }: { job: Job } & Omit<JobPa
         (job.rows_total ? (
           <>
             <Stats job={job} />
-            <button
-              type="button"
-              onClick={() => onPanelOpenChange(!panelOpen)}
-              className="flex items-center gap-3 rounded-[12px] bg-[#0a0f0e] px-3.5 py-3 text-left transition-colors inset-ring inset-ring-[#151d1b] hover:bg-[#0e1312]"
-            >
-              <span className="tint flex size-8 shrink-0 items-center justify-center rounded-[9px] text-primary">
-                <Table2 className="size-4" />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[14px]">{fileName(job.file_key)}</span>
-                <span className="block text-[12px] text-dim">
-                  Result · {(job.rows_total ?? 0).toLocaleString()} rows ·{' '}
-                  {job.file_format === 'excel' ? 'from Excel' : 'from CSV'}
+            {current && (
+              <button
+                type="button"
+                onClick={() => onPanelOpenChange(!panelOpen)}
+                className="flex items-center gap-3 rounded-[12px] bg-card px-3.5 py-3 text-left transition-colors inset-ring inset-ring-border hover:bg-muted"
+              >
+                <span className="tint flex size-8 shrink-0 items-center justify-center rounded-[9px] text-primary">
+                  <Table2 className="size-4" />
                 </span>
-              </span>
-              <ChevronRight className="size-4 shrink-0 text-dim" />
-            </button>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[14px]">{fileName(job.file_key)}</span>
+                  <span className="block text-[12px] text-dim">
+                    Result · {(job.rows_total ?? 0).toLocaleString()} rows ·{' '}
+                    {job.file_format === 'excel' ? 'from Excel' : 'from CSV'}
+                  </span>
+                </span>
+                <ChevronRight className="size-4 shrink-0 text-dim" />
+              </button>
+            )}
           </>
         ) : (
-          <p className="text-[15.5px] leading-relaxed text-[#98a5a1]">
+          <p className="text-[15.5px] leading-relaxed text-muted-foreground">
             That file has a header and no rows, so there was nothing to change.
           </p>
         ))}
@@ -308,12 +338,12 @@ function Stats({ job }: { job: Job }) {
       ].map((card) => (
         <div
           key={card.caption}
-          className="flex flex-col gap-1.5 rounded-[12px] bg-[#0a0f0e] px-4 py-3.5 inset-ring inset-ring-[#151d1b]"
+          className="flex flex-col gap-1.5 rounded-[12px] bg-card px-4 py-3.5 inset-ring inset-ring-border"
         >
           <span
             className={cn(
               'font-mono text-[26px] leading-none',
-              card.accent ? 'text-primary' : 'text-[#e2eae7]',
+              card.accent ? 'text-primary' : 'text-foreground',
             )}
           >
             {card.value}
@@ -333,7 +363,7 @@ function Report({ job }: { job: Job }) {
     const report = job.report as StandardiseReport
     return (
       <section className="flex flex-col gap-2.5" aria-label="What was standardised">
-        <p className="flex flex-wrap items-center gap-2 text-[15.5px] leading-relaxed text-[#cdd8d5]">
+        <p className="flex flex-wrap items-center gap-2 text-[15.5px] leading-relaxed text-body">
           <span>
             <span className="font-mono text-primary">{report.distinct_before}</span> different
             values in <span className="text-foreground">{report.column}</span> became{' '}
@@ -344,7 +374,7 @@ function Report({ job }: { job: Job }) {
         <ReportTable
           head={['Was', 'Became', 'Rows']}
           rows={report.mapping.map((entry) => [
-            <span key="from" className="font-mono text-[12px] text-[#98a5a1]">
+            <span key="from" className="font-mono text-[12px] text-muted-foreground">
               {entry.from}
             </span>,
             entry.to,
@@ -363,9 +393,9 @@ function Report({ job }: { job: Job }) {
     report.operations.find((operation) => operation.kind === kind)?.placeholder
   return (
     <section className="flex flex-col gap-2.5" aria-label="What was found">
-      <p className="flex flex-wrap items-center gap-2 text-[15.5px] leading-relaxed text-[#cdd8d5]">
+      <p className="flex flex-wrap items-center gap-2 text-[15.5px] leading-relaxed text-body">
         <span>
-          Claude saw column names and the shapes of values, never a value, and found personal data
+          nl2regex saw column names and the shapes of values, never a value, and found personal data
           in {report.findings.length} place{report.findings.length === 1 ? '' : 's'}:
         </span>
         {cached && <CacheBadge />}
@@ -374,7 +404,7 @@ function Report({ job }: { job: Job }) {
         head={['Column', 'Holds', 'Because', 'Masked as']}
         rows={report.findings.map((finding) => [
           finding.column,
-          <span key="kind" className="text-[#98a5a1]">
+          <span key="kind" className="text-muted-foreground">
             {finding.kind.replace('_', ' ')}
           </span>,
           <span key="reason" className="text-dim">
@@ -389,9 +419,7 @@ function Report({ job }: { job: Job }) {
         {report.operations.map((operation) => (
           <span key={operation.kind}>
             <span className="text-primary">{operation.placeholder}</span> in{' '}
-            {operation.rows_changed === undefined
-              ? '…'
-              : operation.rows_changed.toLocaleString()}{' '}
+            {operation.rows_changed === undefined ? '…' : operation.rows_changed.toLocaleString()}{' '}
             rows
           </span>
         ))}
@@ -410,7 +438,7 @@ function ReportTable({
   alignLast?: boolean
 }) {
   return (
-    <div className="overflow-hidden rounded-[12px] bg-[#0a0f0e] inset-ring inset-ring-[#151d1b]">
+    <div className="overflow-hidden rounded-[12px] bg-card inset-ring inset-ring-border">
       <table className="w-full text-[13px]">
         <thead className="text-left text-dim">
           <tr className="border-b border-rule">
@@ -452,8 +480,8 @@ function ReportTable({
 function CacheBadge() {
   return (
     <span
-      className="rounded-full bg-[#0e1312] px-2 py-0.5 font-mono text-[11px] text-dim inset-ring inset-ring-[#1b2422]"
-      title="The same question was answered before, so Claude was not called this time."
+      className="rounded-full bg-muted px-2 py-0.5 font-mono text-[11px] text-dim inset-ring inset-ring-input"
+      title="The same question was answered before, so no model was called this time."
     >
       from cache
     </span>
@@ -465,7 +493,7 @@ function CodeCard({ label, code, badge }: { label: string; code: string; badge?:
   const [copied, setCopied] = useState(false)
 
   return (
-    <div className="overflow-hidden rounded-[12px] bg-[#0a0f0e] inset-ring inset-ring-[#151d1b]">
+    <div className="overflow-hidden rounded-[12px] bg-card inset-ring inset-ring-border">
       <div className="flex items-center gap-2 border-b border-rule px-3.5 py-2">
         <span className="eyebrow text-dim">{label}</span>
         {badge && (
@@ -486,7 +514,7 @@ function CodeCard({ label, code, badge }: { label: string; code: string; badge?:
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
-      <pre className="overflow-x-auto px-3.5 py-3 font-mono text-[12.5px] leading-relaxed text-[#cdd8d5]">
+      <pre className="overflow-x-auto px-3.5 py-3 font-mono text-[12.5px] leading-relaxed text-body">
         {code}
       </pre>
     </div>
@@ -496,8 +524,10 @@ function CodeCard({ label, code, badge }: { label: string; code: string; badge?:
 function Unavailable({ title, message }: { title: string; message: string }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
-      <h1 className="font-heading text-[28px] text-[#eef4f1]">{title}</h1>
-      <p className="max-w-md text-[15.5px] leading-relaxed text-balance text-[#98a5a1]">{message}</p>
+      <h1 className="font-heading text-[28px] text-foreground">{title}</h1>
+      <p className="max-w-md text-[15.5px] leading-relaxed text-balance text-muted-foreground">
+        {message}
+      </p>
       <Button asChild>
         <Link href="/">New transformation</Link>
       </Button>

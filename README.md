@@ -74,7 +74,7 @@ milliseconds. A Celery worker does the work and the browser polls.
 
 | Endpoint | Behaviour |
 |---|---|
-| `POST /api/jobs/` | Body `{file_key, replacement, columns}` plus either `pattern` or `prompt`. `kind` selects the transformation: `replace` (the default), `redact_pii`, or `standardise` (exactly one column, and `prompt` as an optional instruction). `202` with the job. Rate limited. |
+| `POST /api/jobs/` | Body `{replacement, columns}` with either `file_key` or `source_job_id` (a follow-up on an earlier result), plus either `pattern` or `prompt`. `kind` selects the transformation: `replace` (the default), `redact_pii`, or `standardise` (exactly one column, and `prompt` as an optional instruction). `202` with the job. Rate limited. |
 | `GET /api/jobs/` · `GET /api/jobs/{id}/` | This connection's jobs: status, progress, stage, error, row counts. |
 | `POST /api/jobs/{id}/cancel/` | A queued job is cancelled at once. A running one has its Spark job cancelled, within a second. |
 | `GET /api/jobs/{id}/rows/?page=&page_size=` | One page of the result. `409` until the job succeeds. |
@@ -398,6 +398,13 @@ src/lib/             the fetch wrapper (typed ApiError) and small helpers
   API; two routes do not need a library.
 - **The rows are not a message.** They open in a panel beside the conversation, with its own
   footer to page through them, because a result is millions of rows long.
+- **A follow-up runs on the last result**, not on the file again, so "now the phone numbers too"
+  is one more turn in the same conversation. Each step writes its own copy and the original file
+  is never touched. This is not in the brief; it is here because the interface is a conversation.
+  A follow-up is refused unless the earlier job finished, produced rows, belongs to this
+  connection and still has its result on disk.
+- **Appearance and the connection live behind the workspace name**: system, dark or light, and
+  connect or disconnect. Every colour is a token, so the light theme is a set of values.
 - **A phone gets the same application, not a stacked page.** The sidebar becomes a drawer over the
   work, and the results a full-screen sheet that waits to be asked for.
 - **Results never arrive all at once.** The table asks for one page, keeps showing it while the next

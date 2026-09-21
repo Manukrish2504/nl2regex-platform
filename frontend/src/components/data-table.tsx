@@ -24,7 +24,7 @@ export function DataTable({
   return (
     <div
       className={cn(
-        'overflow-x-auto rounded-[12px] bg-[#0a0f0e] inset-ring inset-ring-[#151d1b]',
+        'overflow-x-auto rounded-[12px] bg-card inset-ring inset-ring-border',
         className,
       )}
     >
@@ -41,7 +41,7 @@ export function DataTable({
                   key={column}
                   className={cn(
                     'px-3 py-2 text-left text-[12px] font-medium whitespace-nowrap',
-                    active ? 'text-primary' : 'text-[#98a5a1]',
+                    active ? 'text-primary' : 'text-muted-foreground',
                   )}
                 >
                   {onToggleColumn ? (
@@ -51,7 +51,7 @@ export function DataTable({
                       onClick={() => onToggleColumn(column)}
                       className={cn(
                         '-mx-1.5 rounded-md px-1.5 py-0.5 transition-colors',
-                        active ? 'tint' : 'hover:bg-[#141b19]',
+                        active ? 'tint' : 'hover:bg-rule',
                       )}
                     >
                       {column}
@@ -75,11 +75,11 @@ export function DataTable({
                   key={cellIndex}
                   className={cn(
                     'max-w-[22rem] truncate px-3 py-1.5',
-                    highlighted.includes(columns[cellIndex]) ? 'text-[#e8efec]' : 'text-[#98a5a1]',
+                    highlighted.includes(columns[cellIndex]) ? 'text-foreground' : 'text-muted-foreground',
                   )}
                   title={cell ?? undefined}
                 >
-                  {cell ?? <span className="text-[#4d5956] italic">empty</span>}
+                  {cell ?? <span className="text-faint italic">empty</span>}
                 </td>
               ))}
             </tr>

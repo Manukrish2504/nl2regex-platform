@@ -14,6 +14,8 @@ export type Job = {
   file_key: string
   file_format: 'csv' | 'excel'
   kind: JobKind
+  /** Set when this job ran on an earlier job's result rather than on the file in the bucket. */
+  source_job_id: string | null
   /** The plain-English request, when the pattern was not typed. */
   prompt: string | null
   /** Empty while a worker is still writing it from the prompt. */
@@ -50,7 +52,10 @@ export type StandardiseReport = {
   from_cache: boolean
 }
 
-export type JobRequest = Pick<Job, 'file_key' | 'columns'> &
+type Target = { file_key: string } | { source_job_id: string }
+
+export type JobRequest = Pick<Job, 'columns'> &
+  Target &
   (
     | { kind?: 'replace'; replacement: string; pattern: string }
     | { kind?: 'replace'; replacement: string; prompt: string }
@@ -114,3 +119,26 @@ export function submitJob(request: JobRequest) {
 export function cancelJob(id: string) {
   return api<Job>(`/jobs/${id}/cancel/`, { method: 'POST' })
 }
+
+/**
+ * A job and everything it was built on, oldest first: a conversation about one file.
+ *
+ * The links are followed inside the list the sidebar already has, so opening a job costs no
+ * extra requests. A parent older than that list simply starts the chain later.
+ */
+export function chainOf(job: Job, jobs: Job[] = []): Job[] {
+  const chain = [job]
+  const byId = new Map(jobs.map((one) => [one.id, one]))
+  for (let parent = job.source_job_id && byId.get(job.source_job_id); parent; ) {
+    chain.unshift(parent)
+    parent = parent.source_job_id ? byId.get(parent.source_job_id) : undefined
+  }
+  return chain
+}
+
+/** The last job of each conversation: what the sidebar lists, one line per conversation. */
+export function latestOfEachChain(jobs: Job[]): Job[] {
+  const followed = new Set(jobs.map((job) => job.source_job_id).filter(Boolean))
+  return jobs.filter((job) => !followed.has(job.id))
+}
+

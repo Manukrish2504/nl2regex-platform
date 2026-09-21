@@ -8,6 +8,7 @@ from itertools import batched, islice
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 from domain.connections import Connection, FileFormat
@@ -39,8 +40,14 @@ class StreamingEngine:
         connection: Connection,
         on_progress: Progress,
         should_cancel: Callable[[], bool],
+        source: Path | None = None,
     ) -> Iterator["_StreamedFile"]:
         on_progress(0.0, "Reading the header")
+        if source is not None:
+            # A follow-up: the input is what an earlier job wrote, already Parquet.
+            columns = ds.dataset(source, format="parquet").schema.names
+            yield _StreamedFile(columns, iter(()), should_cancel, result=source)
+            return
         if job.file_format is FileFormat.CSV:
             head = read_first_lines(connection, job.file_key, tabular.CSV_HEAD_BYTES)
             columns, _ = tabular.csv_header(head)
@@ -63,13 +70,17 @@ class _StreamedFile:
         connection: Connection | None = None,
         key: str = "",
         workbook: Path | None = None,
+        result: Path | None = None,
     ):
         self.columns = columns
         self._first_rows = first_rows
         self._should_cancel = should_cancel
         self._connection, self._key, self._workbook = connection, key, workbook
+        self._result = result
 
     def sample(self, limit: int) -> list[Row]:
+        if self._result is not None:
+            return _as_rows(ds.dataset(self._result, format="parquet").head(limit))
         return [tabular.fit(row, len(self.columns)) for row in islice(self._first_rows, limit)]
 
     def distinct_values(
@@ -125,6 +136,11 @@ class _StreamedFile:
     @contextmanager
     def _rows(self, on_progress: Progress, stage: str) -> Iterator[Iterator[Row]]:
         """Every row after the header, from the start, reporting how far through the file it is."""
+        if self._result is not None:
+            on_progress(0.0, stage)
+            dataset = ds.dataset(self._result, format="parquet")
+            yield (row for batch in dataset.to_batches() for row in _as_rows(batch))
+            return
         if self._workbook is not None:
             # ponytail: no progress while a workbook is read, because a read-only workbook does
             # not reliably know its row count. Excel tops out near a million rows.
@@ -140,6 +156,12 @@ class _StreamedFile:
             rows = tabular.csv_rows(io.BufferedReader(counting, buffer_size=1024 * 1024))
             tabular.read_header(rows)
             yield rows
+
+
+def _as_rows(table) -> list[Row]:
+    """A pyarrow table or batch as the rows every engine speaks in."""
+    columns = [column.to_pylist() for column in table.columns]
+    return [list(row) for row in zip(*columns, strict=True)]
 
 
 def _columns(operation: Operation) -> list[str]:

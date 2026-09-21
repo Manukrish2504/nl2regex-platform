@@ -34,6 +34,9 @@ class Job:
     columns: list[str]  # empty means every column
     created_at: datetime
     kind: str = "replace"  # "replace", "redact_pii" or "standardise"
+    # A follow-up runs on the result of an earlier job instead of on the file in the bucket,
+    # which is how one request can be refined by the next.
+    source_job_id: str | None = None
     # For "replace": the plain-English request, if the pattern was not typed.
     # For "standardise": an optional instruction, such as "use full English country names".
     prompt: str | None = None

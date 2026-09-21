@@ -6,6 +6,7 @@ import time
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from domain.connections import FileFormat
 from domain.errors import (
@@ -18,6 +19,7 @@ from domain.errors import (
     LLMNotConfigured,
     LLMUnavailable,
     ResultsExpired,
+    SourceJobUnusable,
     StorageUnreachable,
     TooManyActiveJobs,
     UnsupportedFile,
@@ -85,12 +87,13 @@ class JobService:
     def submit(
         self,
         token: str | None,
-        file_key: str,
         replacement: str,
         columns: list[str],
         pattern: str = "",
         prompt: str | None = None,
         kind: str = "replace",
+        file_key: str = "",
+        source_job_id: str | None = None,
     ) -> Job:
         """Validate, persist as QUEUED and hand to a worker. Returns without doing the work.
 
@@ -99,9 +102,20 @@ class JobService:
         request waits on one. The other kinds always need the language model.
         """
         connection = self._connections.get(token)
-        file_format = FileFormat.from_key(file_key)
-        if file_format is None:
-            raise UnsupportedFile()
+        if source_job_id:
+            # A follow-up reads what an earlier job wrote, so it inherits that job's file.
+            source = self._owned(token, source_job_id)
+            if source.status is not JobStatus.SUCCESS:
+                raise SourceJobUnusable("it did not finish successfully.")
+            if not source.rows_total:
+                raise SourceJobUnusable("it produced no rows.")
+            if self._results.read_rows(source.id, 0, 1) is None:
+                raise ResultsExpired()
+            file_key, file_format = source.file_key, source.file_format
+        else:
+            file_format = FileFormat.from_key(file_key)
+            if file_format is None:
+                raise UnsupportedFile()
         if prompt or kind != "replace":
             if not self._patterns.can_write:
                 raise LLMNotConfigured()
@@ -123,6 +137,7 @@ class JobService:
             columns=columns,
             created_at=self._now(),
             kind=kind,
+            source_job_id=source_job_id or None,
             prompt=prompt or None,
             pattern_source="llm" if prompt and kind == "replace" else "user",
         )
@@ -204,10 +219,17 @@ class JobService:
             connection = self._connections.get_by_id(job.connection_id)
             if job.kind == "replace" and not self._settle_pattern(job):
                 return  # the job changed hands while its pattern was being written
-            # An Excel file is downloaded and converted while it is opened, which takes a while.
-            opened_at = 0.3 if job.file_format is FileFormat.EXCEL else 0.05
+            # A follow-up reads Parquet that is already local; only a fresh Excel file has to
+            # be downloaded and converted, and that takes a noticeable part of the job.
+            source = self._source_of(job)
+            excel = job.file_format is FileFormat.EXCEL and source is None
+            opened_at = 0.3 if excel else 0.05
             with self._engine.open(
-                job, connection, _span(progress, 0.0, opened_at), self._cancel_checker(job.id)
+                job,
+                connection,
+                _span(progress, 0.0, opened_at),
+                self._cancel_checker(job.id),
+                source=source,
             ) as opened:
                 plan = self._plan(job, opened, progress, opened_at)
                 if plan is None:
@@ -296,6 +318,15 @@ class JobService:
             self._fail(job, code, message)
 
     # --- helpers --------------------------------------------------------------------------
+
+    def _source_of(self, job: Job) -> Path | None:
+        """Where a follow-up reads from: the folder an earlier job wrote."""
+        if not job.source_job_id:
+            return None
+        source = self._results.path_for(job.source_job_id)
+        if self._results.read_rows(job.source_job_id, 0, 1) is None:
+            raise ResultsExpired()
+        return source
 
     def _owned(self, token: str | None, job_id: str) -> Job:
         connection = self._connections.get(token)

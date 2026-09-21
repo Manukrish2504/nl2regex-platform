@@ -6,6 +6,7 @@ import './index.css'
 import App from './App.tsx'
 import { connectionKey } from '@/features/connection/api'
 import { ApiError } from '@/lib/api'
+import { applyStoredTheme } from '@/lib/theme'
 
 const queryClient = new QueryClient({
   queryCache: new QueryCache({
@@ -26,6 +27,8 @@ const queryClient = new QueryClient({
     },
   },
 })
+
+applyStoredTheme()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
