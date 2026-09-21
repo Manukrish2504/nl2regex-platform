@@ -161,6 +161,13 @@ class JobNotFound(DomainError):
     message = "No such job."
 
 
+class SourceJobUnusable(DomainError):
+    code = "source_job_unusable"
+
+    def __init__(self, reason: str):
+        super().__init__(f"That cannot be followed up: {reason}")
+
+
 class JobNotFinished(DomainError):
     code = "job_not_finished"
     message = "This job has no results yet."

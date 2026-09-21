@@ -206,6 +206,7 @@ def _job_json(job: Job) -> dict:
         "file_key": job.file_key,
         "file_format": job.file_format.value,
         "kind": job.kind,
+        "source_job_id": job.source_job_id,
         "prompt": job.prompt,
         "pattern": job.pattern,  # empty while a worker is still writing it from the prompt
         "pattern_source": job.pattern_source,

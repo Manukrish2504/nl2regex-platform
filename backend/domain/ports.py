@@ -107,9 +107,14 @@ class TransformEngine(Protocol):
         connection: Connection,
         on_progress: Progress,
         should_cancel: Callable[[], bool],
+        source: Path | None = None,
     ) -> AbstractContextManager[OpenFile]:
         """Whatever the engine starts for a job (a Spark application, a download) lives exactly
-        as long as this context, however many passes over the file the job makes inside it."""
+        as long as this context, however many passes over the file the job makes inside it.
+
+        `source` is an earlier job's output folder, for a follow-up. Without it the job reads
+        its file from the bucket.
+        """
         ...
 
 

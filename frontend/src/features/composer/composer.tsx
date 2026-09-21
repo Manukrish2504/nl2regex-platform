@@ -50,7 +50,7 @@ const KINDS: {
     kind: 'redact_pii',
     icon: EyeOff,
     title: 'Redact personal data',
-    caption: 'Claude finds it, Spark masks it',
+    caption: 'Found for you, masked by Spark',
     needsModel: true,
   },
   {
@@ -160,15 +160,15 @@ export function Composer({ dialogOpen, onDialogOpenChange }: ComposerProps) {
       const rows = preview.data?.status === 'done' ? preview.data.rows : []
       const example = rows.flat().find((cell) => cell && /[@\d]/.test(cell) && cell.length > 7)
       const shown = example ? `: “${example}” goes as “${shapeOf(example)}”` : ''
-      return `Claude is sent column names and the shape of a few values, never a value${shown}.`
+      return `Only column names and the shape of a few values are sent, never a value${shown}.`
     }
     if (kind === 'standardise') {
       return columns.length === 1
-        ? `The distinct values of “${columns[0]}” will be sent to Claude, 300 at most. A column with more is refused, not sent.`
-        : 'Click the one column to standardise. Its distinct values, and nothing else, will be sent to Claude.'
+        ? `The distinct values of “${columns[0]}” are sent, 300 at most. A column with more is refused, not sent.`
+        : 'Click the one column to standardise. Its distinct values, and nothing else, are sent.'
     }
     return mode === 'describe'
-      ? 'Claude writes the pattern, and it is checked before it runs. Only this sentence is sent, never your data.'
+      ? 'The pattern is written for you and checked before it runs. Only this sentence is sent, never your data.'
       : 'The replacement is used as literal text. Press Enter to run.'
   }
 
@@ -183,10 +183,10 @@ export function Composer({ dialogOpen, onDialogOpenChange }: ComposerProps) {
             {connection ? `${connection.bucket} · ${connection.region}` : 'Not connected'}
             {jobs?.some(isActive) ? ' · 1 running' : ''}
           </p>
-          <h1 className="font-heading text-[34px] leading-[1.08] tracking-[-0.015em] text-[#eef4f1]">
+          <h1 className="font-heading text-[34px] leading-[1.08] tracking-[-0.015em] text-foreground">
             Clean a spreadsheet the size of a warehouse.
           </h1>
-          <p className="max-w-[46ch] text-[15.5px] leading-relaxed text-[#98a5a1]">
+          <p className="max-w-[46ch] text-[15.5px] leading-relaxed text-muted-foreground">
             Point at a CSV or Excel file in your own S3 bucket, say what to change in plain English,
             and a Spark job rewrites every row.
           </p>
@@ -194,9 +194,9 @@ export function Composer({ dialogOpen, onDialogOpenChange }: ComposerProps) {
 
         {/* The composer: the file as a chip, the request, and the controls under it. */}
         <div className="flex flex-col gap-2.5">
-          <div className="flex flex-col gap-2.5 rounded-[14px] bg-[#0b100f] p-3 shadow-[inset_0_0_0_1px_var(--surface-edge),0_8px_24px_-12px_rgba(0,0,0,0.8)]">
+          <div className="flex flex-col gap-2.5 rounded-[14px] bg-popover p-3 shadow-[inset_0_0_0_1px_var(--surface-edge),0_8px_24px_-12px_rgba(0,0,0,0.8)]">
             {file && (
-              <div className="flex items-center gap-2 self-start rounded-[10px] bg-[#0e1312] py-1.5 pr-1.5 pl-2.5 text-[12px] inset-ring inset-ring-[#1b2422]">
+              <div className="flex items-center gap-2 self-start rounded-[10px] bg-muted py-1.5 pr-1.5 pl-2.5 text-[12px] inset-ring inset-ring-input">
                 <FileSpreadsheet className="size-3.5 shrink-0 text-primary" />
                 <span className="max-w-56 truncate" title={file.key}>
                   {fileName(file.key)}
@@ -214,8 +214,8 @@ export function Composer({ dialogOpen, onDialogOpenChange }: ComposerProps) {
             )}
 
             {kind === 'redact_pii' ? (
-              <p className="px-1 py-2 text-[15.5px] text-[#98a5a1]">
-                Claude works out which columns hold personal data, and Spark masks it:{' '}
+              <p className="px-1 py-2 text-[15.5px] text-muted-foreground">
+                nl2regex works out which columns hold personal data, and Spark masks it:{' '}
                 <span className="font-mono text-[13px] text-foreground">[EMAIL]</span>{' '}
                 <span className="font-mono text-[13px] text-foreground">[PHONE]</span>{' '}
                 <span className="font-mono text-[13px] text-foreground">[NAME]</span>. Nothing to
@@ -243,7 +243,7 @@ export function Composer({ dialogOpen, onDialogOpenChange }: ComposerProps) {
                 }
                 aria-label="What should change"
                 className={cn(
-                  'field-sizing-content max-h-[40vh] w-full resize-none bg-transparent px-1 py-1.5 text-[15.5px] text-foreground outline-none placeholder:text-[#7d8b87]',
+                  'field-sizing-content max-h-[40vh] w-full resize-none bg-transparent px-1 py-1.5 text-[15.5px] text-foreground outline-none placeholder:text-dim',
                   kind === 'replace' && mode === 'regex' && 'font-mono text-[13px]',
                 )}
               />
@@ -264,7 +264,7 @@ export function Composer({ dialogOpen, onDialogOpenChange }: ComposerProps) {
 
               {kind === 'replace' && describeAvailable && (
                 <div
-                  className="flex rounded-full bg-[#0e1312] p-0.5 inset-ring inset-ring-[#1b2422]"
+                  className="flex rounded-full bg-muted p-0.5 inset-ring inset-ring-input"
                   role="group"
                   aria-label="How to give the pattern"
                 >
@@ -301,7 +301,7 @@ export function Composer({ dialogOpen, onDialogOpenChange }: ComposerProps) {
                     }}
                     placeholder={mode === 'describe' ? 'from your sentence' : 'nothing'}
                     spellCheck={false}
-                    className="h-7 w-full min-w-0 rounded-full bg-[#0e1312] px-3 font-mono text-[12px] text-foreground inset-ring inset-ring-[#1b2422] outline-none placeholder:text-[#7d8b87] focus:inset-ring-primary/30"
+                    className="h-7 w-full min-w-0 rounded-full bg-muted px-3 font-mono text-[12px] text-foreground inset-ring inset-ring-input outline-none placeholder:text-dim focus:inset-ring-primary/30"
                   />
                 </label>
               )}
@@ -343,14 +343,14 @@ export function Composer({ dialogOpen, onDialogOpenChange }: ComposerProps) {
                   disabled ? 'This server was started without an ANTHROPIC_API_KEY.' : undefined
                 }
                 className={cn(
-                  'flex flex-col gap-2.5 rounded-[12px] bg-[#0a0f0e] p-3.5 text-left transition-colors inset-ring inset-ring-[#151d1b] disabled:opacity-40',
-                  kind === option ? 'inset-ring-primary/25' : 'hover:bg-[#0e1312]',
+                  'flex flex-col gap-2.5 rounded-[12px] bg-card p-3.5 text-left transition-colors inset-ring inset-ring-border disabled:opacity-40',
+                  kind === option ? 'inset-ring-primary/25' : 'hover:bg-muted',
                 )}
               >
                 <span
                   className={cn(
                     'flex size-7 items-center justify-center rounded-[8px]',
-                    kind === option ? 'tint text-primary' : 'bg-[#101615] text-dim',
+                    kind === option ? 'tint text-primary' : 'bg-accent text-dim',
                   )}
                 >
                   <Icon className="size-3.5" />
@@ -383,7 +383,7 @@ export function Composer({ dialogOpen, onDialogOpenChange }: ComposerProps) {
                     setText(suggestion.text)
                     setReplacement(suggestion.replacement)
                   }}
-                  className="rounded-full bg-[#0a0f0e] px-3 py-1.5 text-[12px] text-dim transition-colors inset-ring inset-ring-[#151d1b] hover:text-foreground"
+                  className="rounded-full bg-card px-3 py-1.5 text-[12px] text-dim transition-colors inset-ring inset-ring-border hover:text-foreground"
                 >
                   {suggestion.label}
                 </button>
@@ -399,7 +399,7 @@ export function Composer({ dialogOpen, onDialogOpenChange }: ComposerProps) {
               <Link
                 key={job.id}
                 href={`/jobs/${job.id}`}
-                className="flex items-center gap-3 rounded-[11px] bg-[#0a0f0e] px-3.5 py-3 transition-colors inset-ring inset-ring-[#151d1b] hover:bg-[#0e1312]"
+                className="flex items-center gap-3 rounded-[11px] bg-card px-3.5 py-3 transition-colors inset-ring inset-ring-border hover:bg-muted"
               >
                 <StatusDot status={job.status} />
                 <span className="min-w-0 flex-1">

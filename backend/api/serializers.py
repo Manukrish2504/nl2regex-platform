@@ -25,8 +25,10 @@ class FileListQuerySerializer(serializers.Serializer):
 
 
 class JobSubmitSerializer(serializers.Serializer):
-    file_key = serializers.CharField(max_length=1024, trim_whitespace=False)
+    file_key = serializers.CharField(max_length=1024, trim_whitespace=False, required=False)
     kind = serializers.ChoiceField(["replace", "redact_pii", "standardise"], default="replace")
+    # A follow-up runs on the result of an earlier job, and takes its file from it.
+    source_job_id = serializers.UUIDField(required=False)
     # For "replace", one of the two. Whitespace matters in a pattern and in a replacement, so
     # neither is trimmed.
     pattern = serializers.CharField(max_length=1000, trim_whitespace=False, required=False)
@@ -44,6 +46,8 @@ class JobSubmitSerializer(serializers.Serializer):
 
     def validate(self, data):
         kind = data["kind"]
+        if ("file_key" in data) == ("source_job_id" in data):
+            raise serializers.ValidationError("Give either a file_key or a source_job_id.")
         if kind == "replace":
             if ("pattern" in data) == ("prompt" in data):
                 raise serializers.ValidationError("Give either a pattern or a prompt, not both.")

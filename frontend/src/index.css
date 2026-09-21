@@ -127,8 +127,56 @@
     --sidebar-accent-foreground: #e8efec;
     --sidebar-border: #141b19;
     --sidebar-ring: #2fd4bd;
-    --dim: #7d8b87; /* the quieter of the two muted greys */
+    --panel: #080b0a; /* the results panel, a shade below the surface */
+    --body: #cdd8d5; /* running text: a step down from a heading */
+    --dim: #7d8b87; /* labels, captions, anything secondary */
+    --faint: #4d5956; /* an empty cell, present but not to be read */
     --gold: #d8b06a; /* a number that needs attention */
+}
+
+/* Light, built from the same design: one teal, a near-white page, and the same spacing. The
+   accent is darkened, because #2fd4bd on white does not carry enough contrast for text. */
+:root:not(.dark) {
+    --background: #eef1f0;
+    --foreground: #0b1413;
+    --card: #ffffff;
+    --card-foreground: #0b1413;
+    --popover: #ffffff;
+    --popover-foreground: #0b1413;
+    --primary: #0b8a78;
+    --primary-foreground: #ffffff;
+    --secondary: #f2f5f4;
+    --secondary-foreground: #172624;
+    --muted: #f2f5f4;
+    --muted-foreground: #5a6b67;
+    --accent: #eaefed;
+    --accent-foreground: #0b1413;
+    --destructive: #b4442a;
+    --border: #dfe5e3;
+    --input: #d3dbd9;
+    --ring: #0b8a78;
+    --chart-1: #0b8a78;
+    --chart-2: #9a7226;
+    --chart-3: #5a6b67;
+    --chart-4: #8b9995;
+    --chart-5: #c3cecb;
+
+    --surface: #ffffff;
+    --surface-edge: #dfe5e3;
+    --rule: #e6ebe9;
+    --panel: #fafcfb;
+    --sidebar: #f4f7f6;
+    --sidebar-foreground: #172624;
+    --sidebar-primary: #0b8a78;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: #eaefed;
+    --sidebar-accent-foreground: #0b1413;
+    --sidebar-border: #e2e8e6;
+    --sidebar-ring: #0b8a78;
+    --body: #2c3a37;
+    --dim: #647570;
+    --faint: #9aa8a4;
+    --gold: #8a6520;
 }
 
 @layer base {
@@ -146,8 +194,11 @@
 @theme inline {
     --color-surface: var(--surface);
     --color-surface-edge: var(--surface-edge);
+    --color-panel: var(--panel);
     --color-rule: var(--rule);
+    --color-body: var(--body);
     --color-dim: var(--dim);
+    --color-faint: var(--faint);
     --color-gold: var(--gold);
 }
 
@@ -174,10 +225,13 @@
 
 *::-webkit-scrollbar { width: 11px; height: 11px; }
 *::-webkit-scrollbar-thumb {
-  background: #1d2624;
+  background: color-mix(in oklch, var(--foreground) 18%, transparent);
   border-radius: 10px;
   border: 3px solid transparent;
   background-clip: content-box;
 }
-*::-webkit-scrollbar-thumb:hover { background: #2a3533; background-clip: content-box; }
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklch, var(--foreground) 30%, transparent);
+  background-clip: content-box;
+}
 *::-webkit-scrollbar-track { background: transparent; }
