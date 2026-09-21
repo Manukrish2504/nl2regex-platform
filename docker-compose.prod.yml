@@ -1,0 +1,169 @@
+# Production stack. A complete file, not an override of docker-compose.yml, so no development
+# default can reach a public server by being forgotten.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Everything it needs is in .env beside this file; see .env.example. Secrets are written ${VAR:?},
+# so the stack refuses to start and names the variable rather than running with a known key.
+#
+# Caddy is the only service with a published port. It terminates TLS for SITE_HOST, serves the
+# built UI, and proxies /api to gunicorn. Postgres, Redis, the Spark cluster and the API itself
+# are on the compose network only.
+
+x-backend-env: &backend-env
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set it in .env}
+  DJANGO_DEBUG: "0"
+  DJANGO_ALLOWED_HOSTS: ${SITE_HOST:?set it in .env},web
+  CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:?set it in .env}
+  POSTGRES_HOST: postgres
+  POSTGRES_DB: nl2regex
+  POSTGRES_USER: nl2regex
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set it in .env}
+  REDIS_URL: redis://redis:6379
+  RESULTS_DIR: /data/results
+  # Non-empty means this deployment offers plain-English requests. Only worker-jobs gets the key.
+  LLM_AVAILABLE: ${ANTHROPIC_API_KEY:+1}
+  LLM_MODEL: ${LLM_MODEL:-claude-opus-5}
+  LLM_RATE_PER_CONNECTION: ${LLM_RATE_PER_CONNECTION:-30/hour}
+  LLM_RATE_PER_SERVER: ${LLM_RATE_PER_SERVER:-200/day}
+  JOB_MAX_FILE_BYTES: ${JOB_MAX_FILE_BYTES:-5000000000}
+  TRANSFORM_ENGINE: spark
+  SPARK_MASTER_URL: spark://spark-master:7077
+  SPARK_EXECUTOR_MEMORY: ${SPARK_EXECUTOR_MEMORY:-2g}
+  SPARK_CORES_MAX: ${SPARK_CORES_MAX:-}
+  SPARK_AUTH_SECRET: ${SPARK_AUTH_SECRET:?set it in .env}
+
+x-backend: &backend
+  # As in the development file: one Dockerfile, so the layers (about 2 GB with Spark, Java and
+  # the S3 connector) are built once and stored under one tag per service.
+  build: ./backend
+  restart: unless-stopped
+  # No source mount: the image's own copy runs, so what was built is what runs.
+  volumes:
+    - results:/data
+  environment: *backend-env
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+x-spark-auth: &spark-auth >-
+  -Dspark.authenticate=true
+  -Dspark.authenticate.secret=${SPARK_AUTH_SECRET:?set it in .env}
+  -Dspark.network.crypto.enabled=true
+
+services:
+  caddy:
+    build: ./frontend
+    restart: unless-stopped
+    environment:
+      # A real name makes Caddy ask Let's Encrypt for a certificate and renew it by itself;
+      # "localhost" makes it issue a local one, which is how this stack is tested on a laptop.
+      SITE_HOST: ${SITE_HOST:?set it in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # The certificate and the account key. Losing these means asking for a new certificate,
+      # and Let's Encrypt counts how often you do that.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nl2regex
+      POSTGRES_USER: nl2regex
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set it in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "nl2regex"]
+      interval: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Credentials live here, encrypted, and only until they expire. Nothing here must outlive
+    # the process, so there is no volume and no dump to steal.
+    command: redis-server --save "" --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      retries: 10
+
+  web:
+    <<: *backend
+    # One web process runs the migration, before the workers can be given anything to do.
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+      gunicorn config.wsgi:application --bind 0.0.0.0:8000
+      --workers ${WEB_WORKERS:-3} --timeout 60 --access-logfile -"
+
+  worker:
+    <<: *backend
+    command: celery -A config worker --loglevel info -Q celery --concurrency 2 -n light@%h
+
+  worker-jobs:
+    <<: *backend
+    command: >
+      celery -A config worker --loglevel info -Q jobs -n jobs@%h
+      --concurrency ${JOB_CONCURRENCY:-1} --max-tasks-per-child 1
+    init: true
+    environment:
+      <<: *backend-env
+      # The one process that calls the model, and so the only one that holds the key.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      spark-master:
+        condition: service_started
+
+  spark-master:
+    build: ./backend
+    restart: unless-stopped
+    command: spark-class org.apache.spark.deploy.master.Master --host spark-master
+    init: true
+    environment:
+      SPARK_MASTER_OPTS: *spark-auth
+
+  spark-worker:
+    build: ./backend
+    restart: unless-stopped
+    command: >
+      spark-class org.apache.spark.deploy.worker.Worker
+      --cores ${SPARK_WORKER_CORES:-2} --memory ${SPARK_WORKER_MEMORY:-2g}
+      --work-dir /tmp/spark-work spark://spark-master:7077
+    init: true
+    environment:
+      SPARK_WORKER_OPTS: *spark-auth
+    volumes:
+      - results:/data
+    deploy:
+      replicas: ${SPARK_WORKERS:-2}
+    depends_on:
+      - spark-master
+
+  flower:
+    <<: *backend
+    command: celery -A config flower --port=5555 --url_prefix=flower
+    environment:
+      <<: *backend-env
+      # Flower lists every task and can revoke them, so it asks for a password. It checks this
+      # itself rather than Caddy doing it, which keeps the credential out of the container that
+      # faces the internet.
+      FLOWER_BASIC_AUTH: ${FLOWER_BASIC_AUTH:?set it in .env, as user:password}
+
+volumes:
+  pgdata:
+  results:
+  caddy_data:
+  caddy_config:
