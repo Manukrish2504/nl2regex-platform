@@ -287,6 +287,15 @@ function Answer({
         (job.rows_total ? (
           <>
             <Stats job={job} />
+            {job.rows_changed === 0 && (
+              // Every turn reports its own outcome, and a run that changed nothing is a success
+              // with nothing to show for it. The reason is almost always the pattern.
+              <p className="text-[15.5px] leading-relaxed text-dim">
+                {job.kind === 'replace'
+                  ? 'Nothing matched, so every row was copied as it was. The pattern may be looking for something this file spells differently, or the wrong column may be selected.'
+                  : 'Every row was copied as it was: there was nothing in this file to change.'}
+              </p>
+            )}
             {current && (
               <button
                 type="button"

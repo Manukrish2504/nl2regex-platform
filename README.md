@@ -511,3 +511,79 @@ with a message; in CI a skip is a failure.
 
 `scripts/make_sample_data.py` generates a deterministic, deliberately messy customer dataset (CSV or
 Excel, any row count) for demos and benchmarks.
+
+## Deploying
+
+One command, once `.env` is filled in. `docker-compose.prod.yml` is a complete file rather than
+an override, so no development default can reach a public server by having been forgotten.
+
+```sh
+cp .env.example .env     # then fill in the five REQUIRED values
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+Every secret is written `${VAR:?}`, so a missing one stops the stack before it starts and names
+the variable:
+
+```
+error while interpolating x-backend-env.DJANGO_SECRET_KEY:
+required variable DJANGO_SECRET_KEY is missing a value: set it in .env
+```
+
+**Caddy is the only service with a published port** (80 and 443). It gets a certificate for
+`SITE_HOST` from Let's Encrypt and renews it by itself, redirects HTTP to HTTPS, serves the built
+UI as static files and proxies `/api` to gunicorn behind the same origin — so there is no CORS to
+configure and the connection cookie is `Secure` and `SameSite=Strict` without exception. Set
+`SITE_HOST=localhost` and Caddy issues a local certificate instead, which is how this stack is
+tested on a laptop before it is tested on a server.
+
+Spark's own web UIs are **not** routed. They have no authentication of any kind, and the master's
+would let a visitor kill running applications. To look at one, tunnel to it:
+`ssh -L 8080:localhost:8080 your-server` after publishing the port to `127.0.0.1` only.
+
+What differs from the development stack:
+
+| | Development | Production |
+|---|---|---|
+| UI | Vite dev server, source mounted | Built once, served by Caddy from the image |
+| API | `runserver` | `gunicorn`, 3 workers |
+| `DEBUG` | 1 | 0 |
+| Source | Mounted, so an edit is live | In the image, so what was built is what runs |
+| Secrets | Dev-only defaults in the compose file | Required; the stack refuses to start without them |
+| Restart | Manual | `unless-stopped` |
+| Redis | Persists | `--save "" --appendonly no`: credentials must not outlive the process |
+| Published ports | 5173 | 80 and 443, on Caddy alone |
+
+Two things that will catch you out:
+
+- **`POSTGRES_PASSWORD` is only read when the data directory is first created.** Changing it later
+  leaves the stack unable to log in. Change it inside Postgres, or start from an empty volume.
+- **A `$` in a `.env` value is read as a variable.** Escape it as `$$`. This is why Flower checks
+  its own password (`FLOWER_BASIC_AUTH=user:password`) rather than Caddy checking a bcrypt hash.
+
+### Observability
+
+| What | Where |
+|---|---|
+| Is everything up? | `GET /api/health/` — database, Redis and a worker ping, 503 if any is down |
+| Queues, tasks, timings, failures | Flower at `/flower/`, behind its own password |
+| Task metrics for Prometheus | Flower's `/flower/metrics` |
+| What Spark is doing | The cluster UI on the master (8080) and the job UI on the driver (4040), both reachable only by tunnel |
+| Job history | Every job, its status, attempts, timings and error code, in Postgres |
+
+### Trade-offs, and what would come next
+
+Deliberate shortcuts, each with the ceiling it holds to and what would make it worth revisiting.
+They are marked `ponytail:` in the code, so this list and the code cannot drift apart.
+
+| Shortcut | Ceiling | Revisit when |
+|---|---|---|
+| Results are a local folder on one shared volume | One host | The app runs on more than one machine — then S3 or EFS |
+| A page of results opens every Parquet footer before it | Thousands of files per job | Paging gets slow — then write a row-count manifest at the end of a job |
+| One Fernet key, no rotation | Until a key must be retired | Key rotation is required — `MultiFernet` takes a list |
+| A new boto3 client per request | Listing latency is not a concern | Browsing feels slow — then cache one per connection |
+| Java failures are matched by class name in the error text | PySpark keeps wrapping them as Py4J strings | PySpark exposes typed exceptions |
+| The safety probe's inputs are a heuristic | Patterns that blow up on the shapes it generates | A pattern gets through that hangs on a shape it does not try |
+| The Spark secret is a `-D` option, so it is visible in `ps` inside the container | Nobody else has a shell there | The cluster is shared — then a mounted conf file |
+| Containers run as root | A single-tenant deployment | Before any multi-tenant one; it changes the ownership of the results volume that executors, workers and the API all write through |
+| Tests use SQLite, compose uses Postgres | Only portable SQL is used | A query needs something Postgres-specific |

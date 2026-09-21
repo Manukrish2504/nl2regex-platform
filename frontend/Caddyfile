@@ -1,0 +1,45 @@
+# The only process reachable from outside. It serves the built UI, proxies the API behind the
+# same origin, and gets a certificate for SITE_HOST by itself. It lives beside the UI because it
+# is what serves it; the routes below are the whole public surface of this deployment.
+
+{
+	# Nothing here uses Caddy's admin API, and an open one is another way in.
+	admin off
+}
+
+{$SITE_HOST:localhost} {
+	encode zstd gzip
+
+	header {
+		# The app renders the contents of somebody's spreadsheet. React escapes it, and this is
+		# the second lock: no inline script runs, and nothing loads from anywhere unexpected.
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	# One origin for the UI and the API. The connection cookie is SameSite=Strict and Path=/api,
+	# which only works because they are the same site; it also means no CORS to get wrong.
+	handle /api/* {
+		reverse_proxy web:8000
+	}
+
+	# Celery's dashboard: queues, tasks and their timings. Flower asks for the password itself
+	# (FLOWER_BASIC_AUTH), which keeps that credential out of this, the internet-facing
+	# container, and keeps a bcrypt hash out of .env, where its $ would be read as a variable.
+	handle /flower/* {
+		reverse_proxy flower:5555
+	}
+
+	# Spark's own web UIs are deliberately not routed. They have no authentication of any kind,
+	# and the master's would let a visitor kill running applications.
+
+	handle {
+		root * /srv
+		# A History-API router: every path that is not a file is the application itself.
+		try_files {path} /index.html
+		file_server
+	}
+}
