@@ -13,7 +13,10 @@
 x-backend-env: &backend-env
   DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set it in .env}
   DJANGO_DEBUG: "0"
-  DJANGO_ALLOWED_HOSTS: ${SITE_HOST:?set it in .env},web
+  # Normally the same name Caddy holds a certificate for. They come apart behind a proxy that
+  # terminates TLS itself, such as a Codespace, where SITE_HOST is ":80" and the name the browser
+  # asks for is the forwarding domain's.
+  DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-${SITE_HOST:?set it in .env}},web
   CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:?set it in .env}
   POSTGRES_HOST: postgres
   POSTGRES_DB: nl2regex

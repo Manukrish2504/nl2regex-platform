@@ -561,6 +561,36 @@ Two things that will catch you out:
 - **A `$` in a `.env` value is read as a variable.** Escape it as `$$`. This is why Flower checks
   its own password (`FLOWER_BASIC_AUTH=user:password`) rather than Caddy checking a bcrypt hash.
 
+### In a GitHub Codespace
+
+The same production stack, on a machine nobody has to pay for. `.devcontainer/` asks for four
+cores and 16 GB, installs a Docker daemon, writes a `.env` of freshly generated secrets and
+builds the stack; every start after that is `docker compose up -d`.
+
+```
+Code -> Codespaces -> Create codespace on main
+```
+
+Two differences from a server, both because **Codespaces terminates TLS itself**:
+
+- `SITE_HOST=:80`, which is Caddy's way of saying "this port, any hostname". It asks no
+  certificate authority for anything, because the browser's HTTPS ends at GitHub's proxy.
+- That also means Caddy matches every hostname, so `DJANGO_ALLOWED_HOSTS` is the only thing
+  checking who the request claims to be for. It is set to the Codespace's own forwarding domain,
+  and a request for anything else gets a 400.
+
+**Port 80 has to be Public** for anyone but you to open the link. `devcontainer.json` asks for
+that, but organisation policy can override it: if the Ports panel shows Private, right-click the
+port -> Port Visibility -> Public.
+
+For plain-English mode, put the API key in **Settings -> Codespaces -> Secrets** as
+`ANTHROPIC_API_KEY`. Compose reads it from the environment, so it never lands in a file.
+
+What a Codespace is not is an always-on server. It **stops after 30 minutes idle** (raise it to
+4 hours in Settings -> Codespaces), and only its owner can start it again, so a link sent to
+someone else works only while the Codespace is awake. The free plan's 120 core-hours a month is
+30 hours at this size. Start it before a demo; stop it afterwards.
+
 ### Observability
 
 | What | Where |
