@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { ChevronDown, Menu, Monitor, Moon, Plug, Plus, Search, Sun, Unplug, X } from 'lucide-react'
+import { ChevronUp, Menu, Monitor, Moon, Plug, Plus, Search, Sun, Unplug, X } from 'lucide-react'
 
 import { useConnection, useDisconnect } from '@/features/connection/api'
 import { RecentJobs } from '@/features/jobs/recent-jobs'
@@ -113,7 +113,7 @@ function Sidebar({
         </button>
       </div>
 
-      <WorkspaceMenu onConnect={onConnect} />
+      <Brand />
 
       <div className="flex flex-col gap-2 px-3 pb-2.5">
         <button
@@ -142,13 +142,28 @@ function Sidebar({
         <RecentJobs />
       </nav>
 
+      <WorkspaceMenu onConnect={onConnect} onClose={onClose} />
     </aside>
   )
 }
 
+/** The application's name, at the head of the sidebar. */
+function Brand() {
+  return (
+    <div className="flex items-center gap-2.5 px-3.5 pt-3 pb-3.5 lg:pt-4">
+      <span className="flex size-[26px] shrink-0 items-center justify-center rounded-lg bg-linear-150 from-primary/70 to-primary/25">
+        <span className="size-[9px] rotate-45 rounded-[2px] bg-primary-foreground" />
+      </span>
+      <span className="text-[14.5px] leading-tight font-semibold tracking-tight">nl2regex</span>
+    </div>
+  )
+}
 
-/** The brand row, and everything about this workspace that is not a transformation. */
-function WorkspaceMenu({ onConnect }: { onConnect: () => void }) {
+/**
+ * The connection, at the foot of the sidebar, where an application puts the account: who you are
+ * signed in as, and the two things you can do about it.
+ */
+function WorkspaceMenu({ onConnect, onClose }: { onConnect: () => void; onClose: () => void }) {
   const { data: connection } = useConnection()
   const { disconnect, pending } = useDisconnect()
   const [theme, setTheme] = useTheme()
@@ -161,7 +176,12 @@ function WorkspaceMenu({ onConnect }: { onConnect: () => void }) {
   ]
 
   return (
-    <div className="relative px-1.5 pt-1 pb-2 lg:pt-2">
+    // The drawer closes on any click inside it, which would shut this menu as it opened, so
+    // clicks stop here and the two items that act close the drawer themselves.
+    <div
+      onClick={(event) => event.stopPropagation()}
+      className="relative shrink-0 border-t border-sidebar-border px-1.5 py-1.5"
+    >
       <button
         type="button"
         aria-haspopup="menu"
@@ -169,16 +189,18 @@ function WorkspaceMenu({ onConnect }: { onConnect: () => void }) {
         onClick={() => setOpen(!open)}
         className="flex w-full items-center gap-2.5 rounded-[10px] px-2 py-2 text-left transition-colors hover:bg-sidebar-accent"
       >
-        <span className="flex size-[26px] shrink-0 items-center justify-center rounded-lg bg-linear-150 from-primary/70 to-primary/25">
-          <span className="size-[9px] rotate-45 rounded-[2px] bg-primary-foreground" />
+        <span className="flex size-[26px] shrink-0 items-center justify-center rounded-full bg-secondary text-[11px] font-semibold text-dim uppercase inset-ring inset-ring-border">
+          {connection ? connection.bucket.slice(0, 1) : <Plug className="size-3" />}
         </span>
         <span className="flex min-w-0 flex-col">
-          <span className="text-[14.5px] leading-tight font-semibold tracking-tight">nl2regex</span>
-          <span className="block truncate text-[11px] text-dim">
+          <span className="truncate text-[13px] leading-tight" title={connection?.bucket}>
             {connection ? connection.bucket : 'No bucket connected'}
           </span>
+          <span className="block truncate text-[11px] text-dim">
+            {connection ? `${connection.region} · read-only` : 'Connect an S3 bucket'}
+          </span>
         </span>
-        <ChevronDown
+        <ChevronUp
           className={cn(
             'ml-auto size-3.5 shrink-0 text-dim transition-transform',
             open && 'rotate-180',
@@ -197,7 +219,7 @@ function WorkspaceMenu({ onConnect }: { onConnect: () => void }) {
           />
           <div
             role="menu"
-            className="absolute top-full right-1.5 left-1.5 z-50 flex flex-col gap-1 rounded-[12px] bg-popover p-1.5 shadow-xl shadow-black/40 inset-ring inset-ring-input"
+            className="absolute right-1.5 bottom-full left-1.5 z-50 mb-1 flex flex-col gap-1 rounded-[12px] bg-popover p-1.5 shadow-xl shadow-black/40 inset-ring inset-ring-input"
           >
             <p className="eyebrow px-2 pt-1.5 pb-1 text-dim">Appearance</p>
             <div className="flex gap-1">
@@ -222,33 +244,27 @@ function WorkspaceMenu({ onConnect }: { onConnect: () => void }) {
             <div className="my-1 h-px bg-rule" />
 
             {connection ? (
-              <>
-                <div className="px-2 py-1">
-                  <p className="truncate text-[12px]" title={connection.bucket}>
-                    {connection.bucket}
-                  </p>
-                  <p className="text-[11px] text-dim">{connection.region} · read-only</p>
-                </div>
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={pending}
-                  onClick={() => {
-                    setOpen(false)
-                    disconnect()
-                  }}
-                  className="flex items-center gap-2 rounded-[9px] px-2 py-2 text-left text-[13px] transition-colors hover:bg-sidebar-accent disabled:opacity-50"
-                >
-                  <Unplug className="size-3.5 text-dim" />
-                  Disconnect
-                </button>
-              </>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={pending}
+                onClick={() => {
+                  setOpen(false)
+                  onClose()
+                  disconnect()
+                }}
+                className="flex items-center gap-2 rounded-[9px] px-2 py-2 text-left text-[13px] transition-colors hover:bg-sidebar-accent disabled:opacity-50"
+              >
+                <Unplug className="size-3.5 text-dim" />
+                Disconnect
+              </button>
             ) : (
               <button
                 type="button"
                 role="menuitem"
                 onClick={() => {
                   setOpen(false)
+                  onClose()
                   onConnect()
                 }}
                 className="flex items-center gap-2 rounded-[9px] px-2 py-2 text-left text-[13px] transition-colors hover:bg-sidebar-accent"
