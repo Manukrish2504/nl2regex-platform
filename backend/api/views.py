@@ -2,10 +2,19 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db import connection as db_connection
 from rest_framework.decorators import api_view
+from rest_framework.exceptions import Throttled
 from rest_framework.response import Response
-from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 
+from api.http import (
+    CAPPED,
+    CONNECTION_COOKIE,
+    COOKIE_ATTRIBUTES,
+    ConnectRateThrottle,
+    JobSubmitThrottle,
+    ModelPerConnectionThrottle,
+    ModelPerServerThrottle,
+)
 from api.serializers import (
     ConnectSerializer,
     FileListQuerySerializer,
@@ -22,11 +31,6 @@ from config.container import (
 )
 from domain.connections import Connection, S3Credentials
 from domain.jobs import Job
-
-# Holds the connection token. HttpOnly keeps it from JavaScript, SameSite=Strict from other sites,
-# and using a cookie at all keeps it out of URLs and therefore out of access logs.
-CONNECTION_COOKIE = "nl2regex_connection"
-_COOKIE_ATTRIBUTES = {"path": "/api", "samesite": "Strict"}
 
 
 def _check(probe):
@@ -56,12 +60,6 @@ def config(request):
     )
 
 
-class ConnectRateThrottle(AnonRateThrottle):
-    """Without a limit, the connect endpoint could be used to test stolen AWS keys in bulk."""
-
-    scope = "connect"
-
-
 class ConnectionView(APIView):
     def get_throttles(self):
         # Only connecting is limited. Reading the connection happens on every page load.
@@ -84,7 +82,7 @@ class ConnectionView(APIView):
             token,
             httponly=True,
             secure=not settings.DEBUG,
-            **_COOKIE_ATTRIBUTES,
+            **COOKIE_ATTRIBUTES,
         )
         return response
 
@@ -98,7 +96,7 @@ class ConnectionView(APIView):
         job_service().forget_jobs(token)
         connection_service().disconnect(token)
         response = Response(status=204)
-        response.delete_cookie(CONNECTION_COOKIE, **_COOKIE_ATTRIBUTES)
+        response.delete_cookie(CONNECTION_COOKIE, **COOKIE_ATTRIBUTES)
         return response
 
 
@@ -142,13 +140,19 @@ class FilePreviewView(APIView):
         )
 
 
-class JobSubmitThrottle(AnonRateThrottle):
-    scope = "jobs"
-
-
 class JobListView(APIView):
     def get_throttles(self):
-        return [JobSubmitThrottle()] if self.request.method == "POST" else []
+        if self.request.method != "POST":
+            return []
+        # Submitting is limited per IP; the two below meter only what would call the model.
+        return [JobSubmitThrottle(), ModelPerConnectionThrottle(), ModelPerServerThrottle()]
+
+    def throttled(self, request, wait):
+        """Say which limit was reached. Being told to wait a day for a feature that costs nothing
+        would send someone away from Regex mode, which is still there and still free."""
+        if getattr(request, "model_capped", False):
+            raise Throttled(wait, detail=CAPPED)
+        raise Throttled(wait)
 
     def get(self, request):
         jobs = job_service().recent(request.COOKIES.get(CONNECTION_COOKIE))

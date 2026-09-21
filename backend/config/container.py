@@ -76,6 +76,10 @@ def pattern_service() -> PatternService:
             ttl=settings.PATTERN_CACHE_TTL,
         ),
         probe=SubprocessPatternProbe(),
+        # Holding the key means the feature is available here. The flag says it is available
+        # somewhere: the web process is given it so it can offer the feature and refuse a job for
+        # it, while the key itself stays in the one worker that calls the model.
+        available=bool(settings.ANTHROPIC_API_KEY) or settings.LLM_OFFERED_WITHOUT_KEY,
     )
 
 
@@ -115,6 +119,7 @@ def job_service() -> JobService:
         connections=connection_service(),
         jobs=DjangoJobRepository(),
         queue=CeleryTaskQueue(),
+        storage=S3Storage(),
         engine=_engine(),
         results=ParquetResultStore(settings.RESULTS_DIR),
         patterns=pattern_service(),
@@ -122,6 +127,7 @@ def job_service() -> JobService:
         standardiser=standardise_service(),
         max_active_jobs=settings.JOB_MAX_ACTIVE_PER_CONNECTION,
         max_attempts=settings.JOB_MAX_ATTEMPTS,
+        max_file_bytes=settings.JOB_MAX_FILE_BYTES,
         stale_after=timedelta(seconds=settings.JOB_STALE_AFTER),
         results_max_age=timedelta(seconds=settings.CONNECTION_MAX_AGE),
     )

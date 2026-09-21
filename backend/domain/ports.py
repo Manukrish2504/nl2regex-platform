@@ -24,6 +24,10 @@ class ObjectStorage(Protocol):
         """One page of the folders and files directly under `prefix`."""
         ...
 
+    def file_size(self, connection: Connection, key: str) -> int:
+        """The object's size in bytes. Raises ObjectNotFound if there is no such key."""
+        ...
+
 
 class CredentialVault(Protocol):
     def store(self, connection: Connection) -> None: ...

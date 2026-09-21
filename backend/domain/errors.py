@@ -74,6 +74,14 @@ class FileTooLarge(DomainError):
     code = "file_too_large"
     message = "This Excel file is too large to process."
 
+    @classmethod
+    def over_limit(cls, size: int, limit: int) -> "FileTooLarge":
+        """For a file refused by its size alone, before anything tried to read it."""
+        return cls(
+            f"That file is {size / 1e9:.1f} GB, and this server processes files up to "
+            f"{limit / 1e9:.0f} GB."
+        )
+
 
 class ColumnNotFound(DomainError):
     code = "column_not_found"

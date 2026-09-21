@@ -43,10 +43,13 @@ class World:
         probe=None,
         classifier=None,
         standardiser=None,
+        file_size=1_000,
+        max_file_bytes=5 * 1000**3,
     ):
         self.clock = START
         self.vault = FakeVault()
-        self.connections = ConnectionService(FakeStorage(), self.vault)
+        self.storage = FakeStorage(size=file_size)
+        self.connections = ConnectionService(self.storage, self.vault)
         self.jobs, self.queue = FakeJobs(), FakeQueue()
         self.engine, self.results = engine or FakeEngine(), results or FakeResults()
         self.writer, self.probe = writer or FakeWriter(), probe or FakeProbe()
@@ -57,6 +60,7 @@ class World:
             self.connections,
             self.jobs,
             self.queue,
+            self.storage,
             self.engine,
             self.results,
             patterns,
@@ -64,6 +68,7 @@ class World:
             StandardiseService(self.standardiser, FakeAdviceCache()),
             max_active_jobs=3,
             max_attempts=3,
+            max_file_bytes=max_file_bytes,
             stale_after=timedelta(minutes=17),
             results_max_age=timedelta(hours=8),
             clock=lambda: self.clock,
@@ -621,6 +626,25 @@ def test_only_a_job_that_finished_can_be_followed_up():
             world.token, replacement="", columns=[], pattern="a", source_job_id=failed.id
         )
     assert len(world.queue.jobs) == 1  # the failed job only
+
+
+def test_a_follow_up_is_not_measured_against_the_file_in_the_bucket():
+    """It never reads that file, only what an earlier job wrote from it, and that job was
+    measured when it was submitted. Sizing it again would refuse work already paid for, and
+    would fail outright once the original file is deleted."""
+    world = World(results=FakeResults(rows=[["1", "x"]]), file_size=100, max_file_bytes=1_000)
+    first = world.submit()
+    world.service.run(first.id)
+    world.storage.size = 10_000_000  # the bucket file grew, or a smaller limit was set
+
+    second = world.service.submit(
+        world.token, replacement="", columns=[], pattern="a", source_job_id=first.id
+    )
+
+    assert second.source_job_id == first.id
+    # And the same request without a source is refused, so the limit itself still works.
+    with pytest.raises(errors.FileTooLarge):
+        world.submit()
 
 
 def test_a_follow_up_needs_the_earlier_result_to_still_be_there():

@@ -13,6 +13,7 @@ from domain.errors import (
     ConnectionNotFound,
     DomainError,
     EngineUnavailable,
+    FileTooLarge,
     InvalidPattern,
     JobNotFinished,
     JobNotFound,
@@ -24,10 +25,11 @@ from domain.errors import (
     TooManyActiveJobs,
     UnsupportedFile,
 )
-from domain.jobs import Job, JobCancelled, JobStatus, RetryLater
+from domain.jobs import Job, JobCancelled, JobStatus, RetryLater, needs_model
 from domain.operations import Operation
 from domain.ports import (
     JobRepository,
+    ObjectStorage,
     OpenFile,
     Progress,
     ResultStore,
@@ -56,6 +58,7 @@ class JobService:
         connections: ConnectionService,
         jobs: JobRepository,
         queue: TaskQueue,
+        storage: ObjectStorage,
         engine: TransformEngine,
         results: ResultStore,
         patterns: PatternService,
@@ -64,6 +67,7 @@ class JobService:
         *,
         max_active_jobs: int,
         max_attempts: int,
+        max_file_bytes: int,
         stale_after: timedelta,
         results_max_age: timedelta,
         clock: Callable[[], datetime] = utc_now,
@@ -71,6 +75,7 @@ class JobService:
         self._connections = connections
         self._jobs = jobs
         self._queue = queue
+        self._storage = storage
         self._engine = engine
         self._results = results
         self._patterns = patterns
@@ -78,6 +83,7 @@ class JobService:
         self._standardiser = standardiser
         self._max_active_jobs = max_active_jobs
         self._max_attempts = max_attempts
+        self._max_file_bytes = max_file_bytes
         self._stale_after = stale_after
         self._results_max_age = results_max_age
         self._now = clock
@@ -116,7 +122,7 @@ class JobService:
             file_format = FileFormat.from_key(file_key)
             if file_format is None:
                 raise UnsupportedFile()
-        if prompt or kind != "replace":
+        if needs_model(kind, prompt):
             if not self._patterns.can_write:
                 raise LLMNotConfigured()
         else:
@@ -126,6 +132,14 @@ class JobService:
                 raise InvalidPattern(str(error)) from error
         if self._jobs.count_active(connection.id) >= self._max_active_jobs:
             raise TooManyActiveJobs()
+        if not source_job_id:
+            # Before a worker, a Spark application or any disk is committed to it. The size comes
+            # from S3, not from the browser, so it is the one number the submitter cannot choose.
+            # A follow-up is not sized: it never reads this file, only what an earlier job wrote
+            # from it, and that job was sized when it was submitted.
+            size = self._storage.file_size(connection, file_key)
+            if size > self._max_file_bytes:
+                raise FileTooLarge.over_limit(size, self._max_file_bytes)
 
         job = Job(
             id=str(uuid.uuid4()),

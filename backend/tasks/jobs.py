@@ -17,9 +17,13 @@ logger = logging.getLogger(__name__)
     bind=True,
     name="tasks.jobs.run_job",
     autoretry_for=(RetryLater,),
-    retry_backoff=True,
+    # Start at 15 seconds, not Celery's 1: what these retries wait for is an outage — S3, the
+    # Spark cluster, the model's API — and none of those ends inside a second. Jitter spreads
+    # retries by picking a wait *below* the backoff, so with it on, all three attempts could still
+    # land within a few seconds; the point here is to wait, so it is off.
+    retry_backoff=15,
     retry_backoff_max=300,
-    retry_jitter=True,
+    retry_jitter=False,
     max_retries=6,
 )
 def run_job(self, job_id: str) -> None:

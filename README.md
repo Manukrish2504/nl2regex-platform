@@ -443,6 +443,7 @@ You connect with your own access key, secret key and bucket name. This is what h
 | Logs | Keys are never logged. The credentials object masks itself in `repr`, the AWS SDK loggers are pinned above the level at which they print request headers, and a failed connect logs only the AWS error code, request ID and bucket name. |
 | Background jobs | Workers receive a connection ID and look the keys up themselves. Keys are never passed as Celery task arguments, which Flower and the result backend would display. |
 | Inside Spark | The keys are set on one job's Spark session at runtime, so they are never in the Spark configuration, on a command line or in an event log, and Spark redacts them on its UI pages. The provider is pinned to `SimpleAWSCredentialsProvider`: the default chain falls back to the machine's own identity if the keys are ever empty (checked: it does), and the pin refuses instead. The bridge between Python and the JVM is kept above the log level at which it prints the calls it relays. |
+| Across the cluster | The keys travel from the driver to the executors over Spark's RPC, so that RPC is authenticated with a shared secret (`SPARK_AUTH_SECRET`) and encrypted. Checked against a live cluster: the right secret runs a job, no secret is refused with `Expected SaslMessage`, and a wrong secret is refused too. Without authentication, anything that could reach the master's port could also run code on the workers. |
 | Abuse | Connect attempts are rate limited per client, so the endpoint cannot be used to test stolen keys in bulk. The API accepts JSON only, which blocks cross-site form posts from connecting a visitor's browser to someone else's bucket. |
 
 Errors are specific: wrong keys, a bucket that doesn't exist, keys without permission on the
@@ -463,6 +464,31 @@ The app only ever reads. This is all it needs, and it is what the project itself
 ```
 
 The bucket can be in any region. The app discovers the region when you connect.
+
+## Limits
+
+Anyone who can reach this server can spend its money and fill its disk. These are what stop
+them. Each is a setting, so a deployment can choose its own.
+
+| Limit | Default | Setting | Why this one |
+|---|---|---|---|
+| Connect attempts | 10 a minute per IP | — | The endpoint would otherwise test stolen AWS keys in bulk. |
+| Submissions | 30 a minute per IP | — | Bounds the burst, not the bill. |
+| Active jobs | 3 per connection | `JOB_MAX_ACTIVE_PER_CONNECTION` | One user cannot hold the whole cluster. |
+| Jobs that call the model | 30 an hour per connection | `LLM_RATE_PER_CONNECTION` | Keeps one honest user from spending the budget. |
+| Jobs that call the model | 200 a day, server-wide | `LLM_RATE_PER_SERVER` | The per-connection limit is one HTTP request from being bypassed: connecting again is free for anyone holding AWS keys. This is the one that bounds the bill. |
+| File size | 5 GB | `JOB_MAX_FILE_BYTES` | The output is written to this server's volume, so an unbounded input is an unbounded amount of someone else's disk. Refused at submit, and the size comes from S3, so it is the one number the submitter cannot choose. |
+
+Only the submissions that would call the model are counted against the two model limits; a typed
+pattern costs nothing and is never metered. Being refused by them says so, and points at Regex
+mode, which still works.
+
+**None of this replaces a spending limit set in the Anthropic console.** That is the only cap
+this server cannot be talked out of, and it is the one to set before putting a URL in public.
+
+The API key itself is given only to `worker-jobs`, the one process that calls the model. Every
+other process is told the feature exists (`LLM_AVAILABLE`), which is all it needs to offer the
+feature and to refuse a job for it. The internet-facing process holds no key.
 
 ## Tests
 
