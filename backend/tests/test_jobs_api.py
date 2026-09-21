@@ -329,3 +329,141 @@ def test_a_standardise_job_runs_end_to_end(client, queue, language_model, put_ob
     assert job["report"]["mapping"] == [{"from": "us", "to": "USA", "rows": 2}]
     rows = client.get(f"/api/jobs/{job_id}/rows/").json()["rows"]
     assert [row[1] for row in rows] == ["USA", "USA", "Germany", "USA"]
+
+
+# --- what costs money, and what costs disk ------------------------------------------------
+
+
+def test_a_file_bigger_than_the_server_processes_is_refused_before_any_work(
+    client, queue, settings, put_object
+):
+    settings.JOB_MAX_FILE_BYTES = 50
+    put_object("big.csv", b"id,email\n" + b"x" * 200)
+
+    response = submit(client, file_key="big.csv")
+
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "file_too_large"
+    # The size is read from S3, so it is the one number the submitter cannot choose.
+    assert queue["jobs"].call_count == 0
+
+
+def test_a_file_the_server_will_process_is_accepted(client, queue, settings):
+    settings.JOB_MAX_FILE_BYTES = len(CSV)
+
+    assert submit(client).status_code == 202
+
+
+def test_an_empty_file_is_refused_at_submit_rather_than_failing_a_job(client, queue, put_object):
+    put_object("empty.csv", b"")
+
+    response = submit(client, file_key="empty.csv")
+
+    assert (response.status_code, response.json()["error"]["code"]) == (400, "file_unreadable")
+    assert queue["jobs"].call_count == 0
+
+
+def test_submissions_that_would_call_the_model_are_capped(client, queue, language_model, settings):
+    settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["llm_connection"] = "2/hour"
+
+    statuses = [
+        client.post(
+            "/api/jobs/", {"file_key": "data.csv", "prompt": "find emails"}, format="json"
+        ).status_code
+        for _ in range(3)
+    ]
+
+    assert statuses == [202, 202, 429]
+
+
+def test_the_cap_does_not_count_jobs_that_run_without_the_model(client, queue, settings):
+    settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["llm_connection"] = "1/hour"
+
+    # A typed pattern calls nothing and costs nothing. Were these counted, a cap of one would
+    # refuse the second; three is as many as one connection may have active at a time.
+    assert [submit(client).status_code for _ in range(3)] == [202] * 3
+
+
+def test_the_server_wide_cap_survives_a_new_connection(
+    client, queue, language_model, settings, s3_bucket
+):
+    settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["llm_server"] = "1/day"
+    body = {"file_key": "data.csv", "prompt": "find emails"}
+    assert client.post("/api/jobs/", body, format="json").status_code == 202
+
+    # Connecting again is free for anyone holding AWS keys, so a per-connection cap alone
+    # would be one HTTP request away from being bypassed.
+    response = connect(s3_bucket).post("/api/jobs/", body, format="json")
+
+    assert response.status_code == 429
+    assert "Regex mode" in response.json()["error"]["message"]
+
+
+def test_a_plain_job_refused_by_a_different_limit_is_not_sent_to_regex_mode(
+    client, queue, settings
+):
+    settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["jobs"] = "1/min"
+    submit(client)
+
+    # Advising Regex mode here would be telling someone to use what they are already using.
+    response = submit(client)
+
+    assert response.status_code == 429
+    assert "Regex mode" not in response.json()["error"]["message"]
+
+
+def test_a_process_without_the_key_still_offers_the_feature_and_queues_the_work(
+    client, queue, settings
+):
+    """The web process holds no API key. It must still offer the feature and accept a job for
+    it, because the worker that runs the job is the one that holds the key."""
+    from config import container
+
+    settings.ANTHROPIC_API_KEY = ""
+    settings.LLM_OFFERED_WITHOUT_KEY = True
+    container.pattern_service.cache_clear()
+    container.job_service.cache_clear()
+
+    assert client.get("/api/config/").json()["describe_available"] is True
+    body = {"file_key": "data.csv", "prompt": "find emails"}
+    assert client.post("/api/jobs/", body, format="json").status_code == 202
+    assert queue["jobs"].call_count == 1
+
+
+def test_a_process_with_neither_the_key_nor_the_flag_refuses(client, queue, settings):
+    from config import container
+
+    settings.ANTHROPIC_API_KEY = ""
+    settings.LLM_OFFERED_WITHOUT_KEY = False
+    container.pattern_service.cache_clear()
+    container.job_service.cache_clear()
+
+    assert client.get("/api/config/").json()["describe_available"] is False
+    body = {"file_key": "data.csv", "prompt": "find emails"}
+    response = client.post("/api/jobs/", body, format="json")
+    assert (response.status_code, response.json()["error"]["code"]) == (400, "llm_not_configured")
+
+
+def test_retries_wait_long_enough_to_outlast_the_outages_they_are_for():
+    """Celery's default is one second, and its jitter picks a wait below the backoff, so with
+    both left alone all three attempts landed inside seven seconds. Nothing recovers that fast."""
+    assert (run_job.retry_backoff, run_job.retry_jitter) == (15, False)
+
+
+@pytest.mark.parametrize(
+    ("body", "content_type", "status"),
+    [
+        ("file_key=data.csv", "application/x-www-form-urlencoded", 415),
+        ("{not json", "application/json", 400),
+    ],
+)
+def test_a_body_that_cannot_be_parsed_is_still_refused_in_one_shape(
+    client, queue, body, content_type, status
+):
+    """The model cap has to read the body to know whether a submission would cost anything, and
+    it runs before the handler. Reading it must not turn a bad body into a server error."""
+    response = client.post("/api/jobs/", body, content_type=content_type)
+
+    assert response.status_code == status
+    assert set(response.json()["error"]) >= {"code", "message"}
+    assert queue["jobs"].call_count == 0

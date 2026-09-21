@@ -101,6 +101,13 @@ class S3Storage:
         folders = [common["Prefix"] for common in page.get("CommonPrefixes", [])]
         return FileListing(folders, files, page.get("NextContinuationToken"))
 
+    def file_size(self, connection: Connection, key: str) -> int:
+        # A one-byte ranged GET rather than a HEAD: head_object reports a missing key as a bare
+        # "404" with no error body, while a GET says NoSuchKey, which translate() already maps.
+        body, size = open_object(connection, key, first_bytes=1)
+        body.close()
+        return size
+
 
 def client_for(credentials: S3Credentials, region: str):
     return boto3.client(

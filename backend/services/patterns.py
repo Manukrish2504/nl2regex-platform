@@ -27,12 +27,21 @@ def normalise(request: str) -> str:
 
 class PatternService:
     def __init__(
-        self, writer: PatternWriter, cache: PatternCache, probe: PatternProbe, max_attempts: int = 3
+        self,
+        writer: PatternWriter,
+        cache: PatternCache,
+        probe: PatternProbe,
+        max_attempts: int = 3,
+        available: bool | None = None,
     ):
         self._writer = writer
         self._cache = cache
         self._probe = probe
         self._max_attempts = max_attempts
+        # Whether this deployment offers the feature at all, which is not the same as whether this
+        # process can perform it: the API key lives only in the worker that calls the model, so the
+        # web process must offer and refuse the feature while holding no key.
+        self._available = writer.is_configured if available is None else available
 
     def suggest(self, request: str) -> tuple[PatternSuggestion, bool]:
         """The pattern for a request, and whether it came from the cache.
@@ -62,7 +71,7 @@ class PatternService:
     @property
     def can_write(self) -> bool:
         """False when no language model is configured, so only typed patterns can be run."""
-        return self._writer.is_configured
+        return self._available
 
     def check(self, pattern: str) -> None:
         """For a pattern the user typed. It compiled when it was submitted; is it safe to run?"""

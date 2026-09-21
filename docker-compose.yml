@@ -10,6 +10,36 @@
 # Postgres, Redis, the Spark master's RPC port and the API itself are on the compose
 # network only. Nothing but the web server is reachable from the host or the network.
 
+x-backend-env: &backend-env
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-only-insecure-key}
+  DJANGO_DEBUG: ${DJANGO_DEBUG:-1}
+  DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,web}
+  # Dev-only default. Web and worker must share it; production must supply its own
+  # (generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())").
+  CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-uAWLf857qzm9wBcJZE6-m0rANNqQGYVj-x9t2Ow3kvw=}
+  POSTGRES_HOST: postgres
+  POSTGRES_DB: nl2regex
+  POSTGRES_USER: nl2regex
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nl2regex}
+  REDIS_URL: redis://redis:6379
+  RESULTS_DIR: /data/results
+  # Whether this deployment offers plain-English requests at all. Every process needs to know, so
+  # it can offer the feature in the UI and refuse a job for it; only worker-jobs gets the key
+  # itself. Non-empty means yes: ":+1" yields 1 when that variable is set, so this reads "either
+  # spelling of the key is present". Put the key in a git-ignored .env beside this file.
+  LLM_AVAILABLE: ${ANTHROPIC_API_KEY:+1}${CLAUDE_API_KEY:+1}
+  LLM_MODEL: ${LLM_MODEL:-claude-opus-5}
+  # "streaming" swaps Spark for the single-process reference engine, which needs no JVM.
+  TRANSFORM_ENGINE: ${TRANSFORM_ENGINE:-spark}
+  # Set to local[N] to run Spark inside the job worker instead, on a machine too small for a
+  # cluster. The engine is the same either way.
+  SPARK_MASTER_URL: ${SPARK_MASTER_URL:-spark://spark-master:7077}
+  SPARK_EXECUTOR_MEMORY: ${SPARK_EXECUTOR_MEMORY:-1g}
+  SPARK_CORES_MAX: ${SPARK_CORES_MAX:-}
+  # Shared by the driver, the master and the workers. Anything that reaches the master's RPC port
+  # without it is refused, and the RPC is encrypted: a user's AWS keys travel over it.
+  SPARK_AUTH_SECRET: ${SPARK_AUTH_SECRET:-dev-only-insecure-spark-secret}
+
 x-backend: &backend
   # Every backend service builds the same Dockerfile, so the layers (about 2 GB with Spark, Java
   # and the S3 connector) are built and stored once, under one tag per service.
@@ -18,30 +48,7 @@ x-backend: &backend
     - ./backend:/app
     # Job output. Workers write it and the web process pages through it, so both mount it.
     - results:/data
-  environment:
-    DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-only-insecure-key}
-    DJANGO_DEBUG: ${DJANGO_DEBUG:-1}
-    DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,web}
-    # Dev-only default. Web and worker must share it; production must supply its own
-    # (generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())").
-    CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-uAWLf857qzm9wBcJZE6-m0rANNqQGYVj-x9t2Ow3kvw=}
-    POSTGRES_HOST: postgres
-    POSTGRES_DB: nl2regex
-    POSTGRES_USER: nl2regex
-    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nl2regex}
-    REDIS_URL: redis://redis:6379
-    RESULTS_DIR: /data/results
-    # Optional. Without it, describing a pattern in plain English is switched off and the rest
-    # works. Put it in a git-ignored .env beside this file; either name is read.
-    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-${CLAUDE_API_KEY:-}}
-    LLM_MODEL: ${LLM_MODEL:-claude-opus-5}
-    # "streaming" swaps Spark for the single-process reference engine, which needs no JVM.
-    TRANSFORM_ENGINE: ${TRANSFORM_ENGINE:-spark}
-    # Set to local[N] to run Spark inside the job worker instead, on a machine too small for a
-    # cluster. The engine is the same either way.
-    SPARK_MASTER_URL: ${SPARK_MASTER_URL:-spark://spark-master:7077}
-    SPARK_EXECUTOR_MEMORY: ${SPARK_EXECUTOR_MEMORY:-1g}
-    SPARK_CORES_MAX: ${SPARK_CORES_MAX:-}
+  environment: *backend-env
   depends_on:
     postgres:
       condition: service_healthy
@@ -88,6 +95,11 @@ services:
     command: >
       celery -A config worker --loglevel info -Q jobs -n jobs@%h
       --concurrency ${JOB_CONCURRENCY:-1} --max-tasks-per-child 1
+    environment:
+      <<: *backend-env
+      # The only process that calls the model, and so the only one that holds the key. The web
+      # process is internet-facing and needs no more than LLM_AVAILABLE above.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-${CLAUDE_API_KEY:-}}
     # A JVM outlives the process that started it by a moment, so it is orphaned when it exits.
     # An init process adopts and reaps it; with Celery as PID 1 every job would leave a zombie.
     init: true
@@ -105,6 +117,14 @@ services:
     build: ./backend
     command: spark-class org.apache.spark.deploy.master.Master --host spark-master
     init: true
+    environment:
+      # spark-class reads these for the daemon it starts. ponytail: the secret is a -D option,
+      # so it shows in `ps` inside the container; move to a mounted conf file if the cluster ever
+      # runs somewhere a second party can get a shell.
+      SPARK_MASTER_OPTS: &spark-auth >-
+        -Dspark.authenticate=true
+        -Dspark.authenticate.secret=${SPARK_AUTH_SECRET:-dev-only-insecure-spark-secret}
+        -Dspark.network.crypto.enabled=true
 
   # Scale out with `docker compose up -d --scale spark-worker=4`.
   spark-worker:
@@ -114,6 +134,8 @@ services:
       --cores ${SPARK_WORKER_CORES:-2} --memory ${SPARK_WORKER_MEMORY:-2g}
       --work-dir /tmp/spark-work spark://spark-master:7077
     init: true
+    environment:
+      SPARK_WORKER_OPTS: *spark-auth
     volumes:
       # Executors write the result files, and read an Excel file once it is converted.
       - results:/data

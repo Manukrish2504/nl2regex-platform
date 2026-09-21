@@ -13,6 +13,9 @@ _STATUS_BY_DOMAIN_ERROR = {
     errors.InvalidPageToken: 400,
     errors.InvalidPattern: 400,
     errors.LLMNotConfigured: 400,
+    # Submitting sizes the file, which is also when an empty one is noticed. The rest of the
+    # errors below the adapters are raised by a worker and recorded on the job, never answered.
+    errors.FileUnreadable: 400,
     errors.UnsupportedFile: 400,
     errors.ConnectionNotFound: 401,
     errors.BucketAccessDenied: 403,
@@ -22,6 +25,7 @@ _STATUS_BY_DOMAIN_ERROR = {
     errors.InvalidTransition: 409,
     errors.JobNotFinished: 409,
     errors.ResultsExpired: 410,
+    errors.FileTooLarge: 413,
     errors.TooManyActiveJobs: 429,
     errors.StorageUnreachable: 502,
     errors.StorageError: 502,

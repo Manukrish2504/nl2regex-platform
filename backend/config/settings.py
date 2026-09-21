@@ -63,6 +63,9 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {"visibility_timeout": CELERY_TASK_TIME_LIMIT 
 
 JOB_MAX_ACTIVE_PER_CONNECTION = 3
 JOB_MAX_ATTEMPTS = 3
+# Refused at submit, before a worker or any disk is committed. The output is written to this
+# server's own volume, so an unbounded input is an unbounded amount of somebody else's disk.
+JOB_MAX_FILE_BYTES = int(os.environ.get("JOB_MAX_FILE_BYTES", 5 * 1000**3))
 # A job still RUNNING after this long has no worker left: the hard limit killed it, and that
 # message was acknowledged, so nothing will redeliver it. This must exceed the visibility timeout,
 # or it would fail a job that is about to be taken over.
@@ -78,6 +81,16 @@ SPARK_CONF = {
     "spark.driver.memory": os.environ.get("SPARK_DRIVER_MEMORY", "1g"),
     "spark.executor.memory": os.environ.get("SPARK_EXECUTOR_MEMORY", "1g"),
 }
+# The cluster's shared secret. Without it the master refuses this driver, and with it every RPC
+# between driver, master and executors is encrypted. That matters here because the driver ships
+# the user's AWS keys to the executors over exactly that channel. Unset only for local[N], where
+# there is no RPC and no second party.
+if os.environ.get("SPARK_AUTH_SECRET"):
+    SPARK_CONF |= {
+        "spark.authenticate": "true",
+        "spark.authenticate.secret": os.environ["SPARK_AUTH_SECRET"],
+        "spark.network.crypto.enabled": "true",
+    }
 # The cores one job may take from the cluster. Unset, a job takes every free core, which suits
 # one job at a time. With N jobs at once, give each a share: the cluster's cores divided by N.
 if os.environ.get("SPARK_CORES_MAX"):
@@ -85,6 +98,12 @@ if os.environ.get("SPARK_CORES_MAX"):
 # Turns a plain-English request into a pattern. Without a key that mode is switched off and the
 # rest of the application works as before. The model was chosen by scripts/eval_prompts.py.
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+# The key is given only to the worker that calls the model. Every other process is told that the
+# feature exists by this flag alone, which is all it needs to offer the feature in the UI and to
+# refuse a job for it. A process holding the key needs no flag: see config/container.py.
+# Any non-empty value means yes: compose builds it by substitution, so it cannot be normalised
+# to exactly "1" without naming the key variable twice.
+LLM_OFFERED_WITHOUT_KEY = bool(os.environ.get("LLM_AVAILABLE"))
 LLM_MODEL = os.environ.get("LLM_MODEL", "claude-opus-5")
 LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "20"))
 PATTERN_CACHE_TTL = 30 * 24 * 60 * 60
@@ -119,7 +138,16 @@ REST_FRAMEWORK = {
     # may set a SameSite=Strict cookie, which would let another site connect a visitor to the
     # attacker's bucket. A form post now gets a 415.
     "DEFAULT_PARSER_CLASSES": ["rest_framework.parsers.JSONParser"],
-    "DEFAULT_THROTTLE_RATES": {"connect": "10/min", "jobs": "30/min"},
+    # "connect" and "jobs" are per IP address. The two "llm" rates meter what costs money: the
+    # first per connection, the second across the whole server, because an attacker holding AWS
+    # keys can open as many connections as it likes. Neither replaces a spending limit set in the
+    # Anthropic console, which is the only cap this server cannot be talked out of.
+    "DEFAULT_THROTTLE_RATES": {
+        "connect": "10/min",
+        "jobs": "30/min",
+        "llm_connection": os.environ.get("LLM_RATE_PER_CONNECTION", "30/hour"),
+        "llm_server": os.environ.get("LLM_RATE_PER_SERVER", "200/day"),
+    },
     # Throttles identify clients by IP. Behind the reverse proxy that is the last
     # X-Forwarded-For entry, which the proxy sets and a client cannot forge.
     "NUM_PROXIES": 1,

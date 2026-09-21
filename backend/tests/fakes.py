@@ -8,8 +8,9 @@ from domain.jobs import ACTIVE_STATUSES, JobCancelled, JobStatus, TransformResul
 
 
 class FakeStorage:
-    def __init__(self, error=None):
+    def __init__(self, error=None, size=1_000):
         self.error = error
+        self.size = size  # what every object in this bucket weighs, unless a test says otherwise
 
     def resolve_bucket(self, credentials, bucket):
         if self.error:
@@ -18,6 +19,11 @@ class FakeStorage:
 
     def list_files(self, connection, prefix, page_token):
         return FileListing([f"{connection.bucket}/{prefix}"], [], None)
+
+    def file_size(self, connection, key):
+        if self.error:
+            raise self.error
+        return self.size
 
 
 class FakeVault:

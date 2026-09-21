@@ -21,6 +21,16 @@ class JobStatus(Enum):
 ACTIVE_STATUSES = frozenset({JobStatus.QUEUED, JobStatus.RUNNING})
 
 
+def needs_model(kind: str, prompt: str | None) -> bool:
+    """Whether running this would call the language model, and so cost money.
+
+    A prompt has to be turned into a pattern, and every kind but "replace" asks the model what to
+    do. The service refuses such a job without a key; the API meters it. Both ask here, so the two
+    cannot drift apart and let a paid request through unmetered.
+    """
+    return bool(prompt) or kind != "replace"
+
+
 @dataclass
 class Job:
     """One request to replace a pattern in a file. It belongs to the connection that created it."""
